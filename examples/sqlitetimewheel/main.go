@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -16,7 +15,7 @@ import (
 func main() {
 	// 创建临时数据库文件
 	dbPath := "example_queue.db"
-	defer os.Remove(dbPath) // 示例结束后删除
+	defer func() { _ = os.Remove(dbPath) }() // 示例结束后删除
 
 	// 创建配置
 	config := sdq.DefaultConfig()
@@ -35,13 +34,16 @@ func main() {
 	)
 
 	// 创建队列
-	q, err := sdq.NewQueue(config)
+	q, err := sdq.New(config)
 	if err != nil {
 		log.Fatalf("Failed to create queue: %v", err)
 	}
-	defer q.Close()
+	defer func() { _ = q.Stop() }()
 
-	ctx := context.Background()
+	// 启动队列
+	if err := q.Start(); err != nil {
+		log.Fatalf("Failed to start queue: %v", err)
+	}
 
 	fmt.Println("=== SQLiteStorage + TimeWheelTicker Example ===")
 	fmt.Println("特点：数据持久化 + 高性能时间轮调度")
@@ -49,7 +51,7 @@ func main() {
 	// 场景 1: 批量添加任务
 	fmt.Println("\nCreating batch jobs...")
 	topics := []string{"order", "payment", "notification"}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		topic := topics[i%len(topics)]
 		delay := time.Duration(i) * time.Second
 		body := fmt.Sprintf("job-%d for %s", i, topic)
@@ -68,7 +70,7 @@ func main() {
 
 	// 场景 2: 模拟进程重启（关闭后重新打开）
 	fmt.Println("\n=== Simulating Process Restart ===")
-	q.Close()
+	_ = q.Stop()
 
 	// 重新打开队列（从 SQLite 恢复数据）
 	storage2, err := sdq.NewSQLiteStorage(dbPath)
@@ -77,11 +79,16 @@ func main() {
 	}
 	config.Storage = storage2
 
-	q, err = sdq.NewQueue(config)
+	q, err = sdq.New(config)
 	if err != nil {
 		log.Fatalf("Failed to recreate queue: %v", err)
 	}
-	defer q.Close()
+	defer func() { _ = q.Stop() }()
+
+	// 启动队列
+	if err := q.Start(); err != nil {
+		log.Fatalf("Failed to start queue: %v", err)
+	}
 
 	// 验证数据已恢复
 	stats = q.Stats()
@@ -99,10 +106,10 @@ func main() {
 		}
 
 		fmt.Printf("Reserved job %d: topic=%s, priority=%d, body=%s\n",
-			job.Meta.ID, job.Meta.Topic, job.Meta.Priority, string(job.Body))
+			job.Meta.ID, job.Meta.Topic, job.Meta.Priority, string(job.Body()))
 
 		// 处理并删除
-		if err := q.Delete(ctx, job.Meta.ID); err != nil {
+		if err := q.Delete(job.Meta.ID); err != nil {
 			log.Printf("Failed to delete job: %v", err)
 		}
 		consumedCount++
@@ -110,7 +117,11 @@ func main() {
 
 	// 场景 4: 查看某个 Topic 的统计
 	for _, topic := range topics {
-		topicStats := q.StatsTopic(topic)
+		topicStats, err := q.StatsTopic(topic)
+		if err != nil {
+			log.Printf("Failed to get stats for topic %s: %v", topic, err)
+			continue
+		}
 		fmt.Printf("\nTopic '%s': Total=%d, Ready=%d, Reserved=%d, Delayed=%d, Buried=%d\n",
 			topic,
 			topicStats.TotalJobs,

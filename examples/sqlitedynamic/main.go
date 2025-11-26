@@ -19,7 +19,7 @@ import (
 func main() {
 	// 创建数据库文件
 	dbPath := "example_persistent_queue.db"
-	defer os.Remove(dbPath)
+	defer func() { _ = os.Remove(dbPath) }()
 
 	// 创建配置
 	config := sdq.DefaultConfig()
@@ -43,11 +43,16 @@ func main() {
 	config.MaxTouchDuration = 5 * time.Minute
 
 	// 创建队列
-	q, err := sdq.NewQueue(config)
+	q, err := sdq.New(config)
 	if err != nil {
 		log.Fatalf("Failed to create queue: %v", err)
 	}
-	defer q.Close()
+	defer func() { _ = q.Stop() }()
+
+	// 启动队列
+	if err := q.Start(); err != nil {
+		log.Fatalf("Failed to start queue: %v", err)
+	}
 
 	ctx := context.Background()
 
@@ -80,7 +85,7 @@ func main() {
 	stopChan := make(chan struct{})
 	workerCount := 2
 
-	for i := 0; i < workerCount; i++ {
+	for i := range workerCount {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
@@ -93,7 +98,7 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	fmt.Println("\nPress Ctrl+C to gracefully shutdown...")
-	fmt.Println("Waiting for jobs to be processed...\n")
+	fmt.Println("Waiting for jobs to be processed...")
 
 	// 等待信号或任务完成
 	go func() {
@@ -137,21 +142,21 @@ func runWorker(ctx context.Context, q *sdq.Queue, workerID int, stopChan chan st
 				continue
 			}
 
-			fmt.Printf("[Worker %d] Reserved job %d: %s\n", workerID, job.Meta.ID, string(job.Body))
+			fmt.Printf("[Worker %d] Reserved job %d: %s\n", workerID, job.Meta.ID, string(job.Body()))
 
 			// 模拟处理任务（较长时间，需要 Touch）
 			if err := processLongRunningJob(ctx, q, job, workerID); err != nil {
 				fmt.Printf("[Worker %d] Job %d failed: %v\n", workerID, job.Meta.ID, err)
-				q.Bury(job.Meta.ID)
+				_ = q.Bury(job.Meta.ID, job.Meta.Priority)
 			} else {
 				fmt.Printf("[Worker %d] Job %d completed\n", workerID, job.Meta.ID)
-				q.Delete(ctx, job.Meta.ID)
+				_ = q.Delete(job.Meta.ID)
 			}
 		}
 	}
 }
 
-func processLongRunningJob(ctx context.Context, q *sdq.Queue, job *sdq.Job, workerID int) error {
+func processLongRunningJob(_ context.Context, q *sdq.Queue, job *sdq.Job, workerID int) error {
 	// 模拟长时间任务，分 3 个阶段，每个阶段 Touch 一次
 	stages := []string{"initializing", "processing", "finalizing"}
 

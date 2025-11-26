@@ -97,6 +97,13 @@ func (w *DynamicSleepTicker) Unregister(name string) {
 
 // Wakeup 唤醒定时器（公开方法）
 func (w *DynamicSleepTicker) Wakeup() {
+	// 标记所有缓存为 dirty，强制重新计算
+	w.mu.Lock()
+	for _, ct := range w.registry {
+		ct.dirty = true
+	}
+	w.mu.Unlock()
+
 	w.wakeup()
 }
 
@@ -145,11 +152,8 @@ func (w *DynamicSleepTicker) run() {
 		if hasNext {
 			now := time.Now()
 			if nextTime.After(now) {
-				sleepDuration = nextTime.Sub(now)
 				// 限制最小间隔
-				if sleepDuration < w.minInterval {
-					sleepDuration = w.minInterval
-				}
+				sleepDuration = max(nextTime.Sub(now), w.minInterval)
 			} else {
 				// 已经过期，立即处理
 				sleepDuration = 0
@@ -161,8 +165,13 @@ func (w *DynamicSleepTicker) run() {
 
 		// Sleep 或等待唤醒
 		if sleepDuration == 0 {
-			// 立即处理
-			w.processTick()
+			// 立即处理，但先检查是否需要退出
+			select {
+			case <-w.ctx.Done():
+				return
+			default:
+				w.processTick()
+			}
 		} else {
 			select {
 			case <-w.ctx.Done():
@@ -223,8 +232,19 @@ func (w *DynamicSleepTicker) processTick() {
 	}
 	w.mu.RUnlock()
 
-	// 通知各个对象处理
+	// 通知各个对象处理（只处理到期的）
 	for _, ct := range cached {
+		// 如果是 dirty，重新获取时间
+		if ct.dirty {
+			ct.nextTime = ct.tickable.NextTickTime()
+			ct.dirty = false
+		}
+
+		// 检查是否需要 tick
+		if ct.nextTime.IsZero() || now.Before(ct.nextTime) {
+			continue
+		}
+
 		ct.tickable.ProcessTick(now)
 		// 标记为 dirty，下次需要重新计算
 		ct.dirty = true

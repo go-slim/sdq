@@ -186,6 +186,14 @@ func (s *SQLiteStorage) initTables() error {
 // SaveJob 保存任务（元数据 + Body）
 // 内部会自动合并并发请求，提升批量写入性能
 func (s *SQLiteStorage) SaveJob(ctx context.Context, meta *JobMeta, body []byte) error {
+	// 检查是否已关闭
+	s.closeMu.Lock()
+	if s.closed {
+		s.closeMu.Unlock()
+		return ErrStorageClosed
+	}
+	s.closeMu.Unlock()
+
 	// 克隆元数据和 body，避免外部修改
 	metaCopy := meta.Clone()
 	var bodyCopy []byte
@@ -204,8 +212,7 @@ func (s *SQLiteStorage) SaveJob(ctx context.Context, meta *JobMeta, body []byte)
 	// 发送到 saveChan，由 batchSaveLoop 批量处理
 	select {
 	case s.saveChan <- req:
-		// 等待结果
-		return <-req.done
+		return <-req.done // 等待结果
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-s.ctx.Done():
@@ -510,7 +517,7 @@ func (s *SQLiteStorage) ScanJobMeta(ctx context.Context, filter *JobMetaFilter) 
 
 	// 构建查询
 	query := "SELECT id, topic, priority, state, delay, ttr, created_at, ready_at, reserved_at, buried_at, deleted_at, reserves, timeouts, releases, buries, kicks, touches FROM job_meta WHERE 1=1"
-	args := make([]interface{}, 0)
+	args := make([]any, 0)
 
 	if filter != nil {
 		if filter.Topic != "" {
@@ -537,7 +544,7 @@ func (s *SQLiteStorage) ScanJobMeta(ctx context.Context, filter *JobMetaFilter) 
 	if err != nil {
 		return nil, fmt.Errorf("query job_meta: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var metas []*JobMeta
 	for rows.Next() {

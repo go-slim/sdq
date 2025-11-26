@@ -484,6 +484,8 @@ func TestTouch_MinTouchInterval(t *testing.T) {
 // TestTouch_MaxTouchDuration 测试 MaxTouchDuration 限制
 func TestTouch_MaxTouchDuration(t *testing.T) {
 	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		t.Logf("Storage type: %s, actual type: %T", testStorage.Type, testStorage.Storage)
+
 		config := DefaultConfig()
 		config.Storage = testStorage.Storage
 		config.Ticker = NewNoOpTicker()
@@ -512,20 +514,29 @@ func TestTouch_MaxTouchDuration(t *testing.T) {
 			t.Fatalf("Reserve failed: %v", err)
 		}
 
+		t.Logf("Initial state: Touches=%d, TotalTouchTime=%v, TTR=%v, Meta ptr=%p",
+			job.Meta.Touches, job.Meta.TotalTouchTime, job.Meta.TTR, job.Meta)
+
 		// Touch 延长 200ms，应该成功（总延长 200ms）
 		err = job.Touch()
+		t.Logf("After 1st Touch: err=%v, Touches=%d, TotalTouchTime=%v",
+			err, job.Meta.Touches, job.Meta.TotalTouchTime)
 		if err != nil {
 			t.Errorf("First Touch failed: %v", err)
 		}
 
 		// 再 Touch 延长 200ms，应该成功（总延长 400ms）
 		err = job.Touch()
+		t.Logf("After 2nd Touch: err=%v, Touches=%d, TotalTouchTime=%v",
+			err, job.Meta.Touches, job.Meta.TotalTouchTime)
 		if err != nil {
 			t.Errorf("Second Touch failed: %v", err)
 		}
 
 		// 再 Touch 延长 200ms，应该失败（总延长会超过 500ms）
 		err = job.Touch()
+		t.Logf("After 3rd Touch: err=%v, Touches=%d, TotalTouchTime=%v",
+			err, job.Meta.Touches, job.Meta.TotalTouchTime)
 		if err == nil {
 			t.Error("Touch should fail when exceeding MaxTouchDuration")
 		}
@@ -1069,6 +1080,17 @@ func TestStress_DelayedJobs(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		// 等待恢复完成，确保初始状态检查的准确性
+		if err := q.WaitForRecovery(5 * time.Second); err != nil {
+			t.Fatalf("WaitForRecovery failed: %v", err)
+		}
+
+		// 检查初始状态是否为空（确保测试隔离）
+		initialStats := q.Stats()
+		if initialStats.TotalJobs != 0 {
+			t.Fatalf("初始状态不为空: TotalJobs=%d, 可能是测试隔离问题", initialStats.TotalJobs)
+		}
+
 		const jobCount = 5000
 
 		// 添加大量延迟任务（延迟 100-500ms）
@@ -1276,7 +1298,7 @@ func TestAsyncPutChannelFull(t *testing.T) {
 		t.Fatalf("New failed: %v", err)
 	}
 
-	// 启动队列（让 asyncPutWorker 运行）
+	// 启动队列
 	if err := q.Start(); err != nil {
 		t.Fatalf("Start failed: %v", err)
 	}

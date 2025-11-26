@@ -55,14 +55,6 @@ type Config struct {
 	// 如果都为 nil，则使用默认的 MemoryStorage
 	NewStorageFunc NewStorageFunc
 
-	// === 异步配置 ===
-
-	// AsyncPutWorkers 异步 Put worker 数量（默认 2）
-	// 用于后台批量写入存储，减少主线程阻塞
-	// - 1: 最大化批量效率（推荐用于 SQLite）
-	// - 2+: 适用于网络存储或需要并发写入的场景
-	AsyncPutWorkers int
-
 	// === 日志配置 ===
 
 	// Logger 日志记录器（可选）
@@ -82,6 +74,5 @@ func DefaultConfig() Config {
 		MaxJobsPerTopic:      0,     // 无限制
 		EnableTopicCleanup:   false, // 默认不启用
 		TopicCleanupInterval: 1 * time.Hour,
-		AsyncPutWorkers:      2, // 默认 2 个异步 worker
 	}
 }

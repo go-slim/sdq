@@ -14,12 +14,10 @@
 # Dependency directories
 vendor/
 
-# Go workspace file
-go.work
-
 # IDE specific files
 .idea/
 .vscode/
+.zed/
 *.swp
 *.swo
 *~
@@ -36,7 +34,3 @@ Thumbs.db
 
 # TODO files (internal planning, not for version control)
 TODOs.md
-
-# Build artifacts
-/bin/
-/dist/

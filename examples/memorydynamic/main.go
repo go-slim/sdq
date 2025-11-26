@@ -25,11 +25,16 @@ func main() {
 	)
 
 	// 创建队列
-	q, err := sdq.NewQueue(config)
+	q, err := sdq.New(config)
 	if err != nil {
 		log.Fatalf("Failed to create queue: %v", err)
 	}
-	defer q.Close()
+	defer func() { _ = q.Stop() }()
+
+	// 启动队列
+	if err := q.Start(); err != nil {
+		log.Fatalf("Failed to start queue: %v", err)
+	}
 
 	ctx := context.Background()
 
@@ -70,13 +75,13 @@ func main() {
 		}
 
 		elapsed := time.Since(startTime)
-		fmt.Printf("[%v] Reserved job %d: %s\n", elapsed.Round(100*time.Millisecond), job.Meta.ID, string(job.Body))
+		fmt.Printf("[%v] Reserved job %d: %s\n", elapsed.Round(100*time.Millisecond), job.Meta.ID, string(job.Body()))
 
 		// 处理任务
 		if err := processJobWithTouch(ctx, q, job); err != nil {
-			q.Bury(job.Meta.ID)
+			_ = q.Bury(job.Meta.ID, job.Meta.Priority)
 		} else {
-			q.Delete(ctx, job.Meta.ID)
+			_ = q.Delete(job.Meta.ID)
 			consumedCount++
 		}
 	}
@@ -88,11 +93,11 @@ func main() {
 		stats.ReadyJobs, stats.ReservedJobs, stats.DelayedJobs, stats.BuriedJobs)
 }
 
-func processJobWithTouch(ctx context.Context, q *sdq.Queue, job *sdq.Job) error {
+func processJobWithTouch(_ context.Context, q *sdq.Queue, job *sdq.Job) error {
 	fmt.Printf("Processing job %d...\n", job.Meta.ID)
 
 	// 模拟长时间处理，使用 Touch 延长 TTR
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		time.Sleep(200 * time.Millisecond)
 
 		// 每 200ms Touch 一次，防止 TTR 超时

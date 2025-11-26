@@ -121,15 +121,11 @@ func TestSQLiteStorage_ClosedOperation(t *testing.T) {
 		t.Fatalf("Close error: %v", err)
 	}
 
-	// 关闭后的操作应该 panic（因为 closed 标志检查）
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("SaveJob after Close should panic")
-		}
-	}()
-
-	// 这个调用应该 panic
-	_ = storage.SaveJob(ctx, meta, []byte("body"))
+	// 关闭后的操作应该返回错误（context canceled）
+	err = storage.SaveJob(ctx, meta, []byte("body"))
+	if err == nil {
+		t.Error("SaveJob after Close should return error")
+	}
 
 	ReleaseJobMeta(meta)
 }
@@ -294,10 +290,10 @@ func TestSQLiteStorage_InvalidID(t *testing.T) {
 		t.Error("GetJobBody with invalid ID should return error")
 	}
 
-	// 删除不存在的任务（应该成功但没有影响）
+	// 删除不存在的任务（应该返回 ErrNotFound）
 	err = storage.DeleteJob(ctx, 99999)
-	if err != nil {
-		t.Errorf("DeleteJob with invalid ID should not return error: %v", err)
+	if err != ErrNotFound {
+		t.Errorf("DeleteJob with invalid ID = %v, want ErrNotFound", err)
 	}
 }
 

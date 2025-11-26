@@ -52,6 +52,7 @@ func NewTestStorage(t *testing.T, storageType StorageType) *TestStorage {
 		}
 
 		dbPath := filepath.Join(tmpDir, "test.db")
+		t.Logf("Creating SQLite storage at: %s", dbPath)
 		storage, err := NewSQLiteStorage(dbPath)
 		if err != nil {
 			_ = os.RemoveAll(tmpDir)

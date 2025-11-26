@@ -564,35 +564,43 @@ func (h *TopicHub) Touch(id uint64, config *Config, duration ...time.Duration) e
 	now := time.Now()
 
 	// 检查最小 Touch 间隔
-	if config.MinTouchInterval > 0 {
-		if meta.Touches > 0 {
-			lastTouch := meta.ReservedAt.Add(time.Duration(meta.Touches) * config.MinTouchInterval)
-			if now.Before(lastTouch.Add(config.MinTouchInterval)) {
-				return ErrInvalidTouchTime
-			}
+	if config.MinTouchInterval > 0 && meta.Touches > 0 {
+		// 使用 LastTouchAt 检查间隔
+		if now.Sub(meta.LastTouchAt) < config.MinTouchInterval {
+			return ErrInvalidTouchTime
 		}
 	}
 
+	// 计算本次延长的时间
+	var extendDuration time.Duration
 	if len(duration) > 0 {
-		// 模式：延长指定时间
-		extendDuration := duration[0]
+		// 模式1：延长指定时间
+		extendDuration = duration[0]
+	} else {
+		// 模式2：重置为原始 TTR
+		extendDuration = meta.TTR
+	}
 
-		// 检查最大延长时间限制
-		if config.MaxTouchDuration > 0 {
-			totalExtended := time.Duration(meta.Touches+1) * extendDuration
-			if totalExtended > config.MaxTouchDuration {
-				return ErrTouchLimitExceeded
-			}
+	// 检查最大延长时间限制
+	if config.MaxTouchDuration > 0 {
+		totalExtended := meta.TotalTouchTime + extendDuration
+		if totalExtended > config.MaxTouchDuration {
+			return ErrTouchLimitExceeded
 		}
+	}
 
-		// 延长 TTR
+	// 更新时间和统计
+	if len(duration) > 0 {
+		// 延长模式：在当前 ReservedAt 基础上延长
 		meta.ReservedAt = meta.ReservedAt.Add(extendDuration)
 	} else {
-		// 模式：重置为原始 TTR
+		// 重置模式：将 ReservedAt 设为现在
 		meta.ReservedAt = now
 	}
 
 	meta.Touches++
+	meta.LastTouchAt = now
+	meta.TotalTouchTime += extendDuration
 
 	// 更新 Reserved 映射中的引用
 	topic.addReserved(meta)

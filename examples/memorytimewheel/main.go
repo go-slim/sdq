@@ -25,11 +25,16 @@ func main() {
 	)
 
 	// 创建队列
-	q, err := sdq.NewQueue(config)
+	q, err := sdq.New(config)
 	if err != nil {
 		log.Fatalf("Failed to create queue: %v", err)
 	}
-	defer q.Close()
+	defer func() { _ = q.Stop() }()
+
+	// 启动队列
+	if err := q.Start(); err != nil {
+		log.Fatalf("Failed to start queue: %v", err)
+	}
 
 	ctx := context.Background()
 
@@ -55,17 +60,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to reserve job: %v", err)
 	}
-	fmt.Printf("Reserved job %d: %s\n", job1.Meta.ID, string(job1.Body))
+	fmt.Printf("Reserved job %d: %s\n", job1.Meta.ID, string(job1.Body()))
 
 	// 处理任务
 	if err := processJob(ctx, job1); err != nil {
 		// 处理失败，埋葬任务
-		if err := q.Bury(job1.Meta.ID); err != nil {
+		if err := q.Bury(job1.Meta.ID, job1.Meta.Priority); err != nil {
 			log.Printf("Failed to bury job: %v", err)
 		}
 	} else {
 		// 处理成功，删除任务
-		if err := q.Delete(ctx, job1.Meta.ID); err != nil {
+		if err := q.Delete(job1.Meta.ID); err != nil {
 			log.Printf("Failed to delete job: %v", err)
 		}
 		fmt.Printf("Job %d completed successfully\n", job1.Meta.ID)
@@ -79,11 +84,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to reserve delayed job: %v", err)
 	}
-	fmt.Printf("Reserved delayed job %d: %s\n", job2.Meta.ID, string(job2.Body))
+	fmt.Printf("Reserved delayed job %d: %s\n", job2.Meta.ID, string(job2.Body()))
 
 	// 处理并删除
 	if err := processJob(ctx, job2); err == nil {
-		q.Delete(ctx, job2.Meta.ID)
+		_ = q.Delete(job2.Meta.ID)
 		fmt.Printf("Job %d completed successfully\n", job2.Meta.ID)
 	}
 
@@ -93,9 +98,9 @@ func main() {
 		stats.ReadyJobs, stats.ReservedJobs, stats.DelayedJobs, stats.BuriedJobs)
 }
 
-func processJob(ctx context.Context, job *sdq.Job) error {
+func processJob(_ context.Context, job *sdq.Job) error {
 	// 模拟任务处理
-	fmt.Printf("Processing job %d: %s\n", job.Meta.ID, string(job.Body))
+	fmt.Printf("Processing job %d: %s\n", job.Meta.ID, string(job.Body()))
 	time.Sleep(100 * time.Millisecond)
 	return nil
 }

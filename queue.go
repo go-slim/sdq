@@ -39,12 +39,6 @@ var (
 	ErrTooManyWaiters = errors.New("sdq: too many waiters")
 )
 
-// putRequest 异步 Put 请求
-type putRequest struct {
-	meta *JobMeta
-	body []byte
-}
-
 // Queue 延迟队列
 // 架构设计：
 // - 每个 Topic 独立管理自己的 Ready/Delayed/Reserved/Buried 队列
@@ -73,13 +67,14 @@ type Queue struct {
 	// Logger 日志记录器
 	logger *slog.Logger
 
-	// 异步 Put 通道
-	putChan chan *putRequest
-
 	// 上下文控制
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// 恢复完成通知（用于等待异步恢复）
+	recoveryDone chan struct{}
+	recoveryOnce sync.Once
 }
 
 // New 创建新的 Queue 实例
@@ -101,12 +96,12 @@ func New(config Config) (*Queue, error) {
 	}
 
 	q := &Queue{
-		config:     config,
-		ctx:        ctx,
-		cancel:     cancel,
-		logger:     logger,
-		reserveMgr: newReserveManager(ctx),
-		putChan:    make(chan *putRequest, 1000), // 缓冲 1000 个异步 Put 请求
+		config:       config,
+		ctx:          ctx,
+		cancel:       cancel,
+		logger:       logger,
+		reserveMgr:   newReserveManager(ctx),
+		recoveryDone: make(chan struct{}),
 	}
 
 	// 创建 Ticker
@@ -170,7 +165,6 @@ func (q *Queue) Start() error {
 // StartWithOptions 使用选项启动 Queue
 func (q *Queue) StartWithOptions(opts StartOptions) error {
 	q.logger.Info("starting queue",
-		slog.Int("async_put_workers", q.config.AsyncPutWorkers),
 		slog.Bool("topic_cleanup_enabled", q.config.EnableTopicCleanup),
 	)
 
@@ -188,6 +182,8 @@ func (q *Queue) StartWithOptions(opts StartOptions) error {
 
 	// 2. 后台异步恢复任务
 	q.wg.Go(func() {
+		defer q.recoveryOnce.Do(func() { close(q.recoveryDone) })
+
 		q.logger.Info("starting async job recovery")
 		progressCh := recoveryRunner.RecoverAsync()
 		for progress := range progressCh {
@@ -214,17 +210,6 @@ func (q *Queue) StartWithOptions(opts StartOptions) error {
 		}
 	})
 
-	// 启动异步 Put worker
-	numWorkers := q.config.AsyncPutWorkers
-	if numWorkers <= 0 {
-		numWorkers = 2 // 默认 2 个
-	}
-	for range numWorkers {
-		q.wg.Add(1)
-		go q.asyncPutWorker()
-	}
-	q.logger.Debug("started async put workers", slog.Int("count", numWorkers))
-
 	// 启动 Ticker
 	q.ticker.Start()
 	q.logger.Debug("started ticker")
@@ -244,6 +229,34 @@ func (q *Queue) StartWithOptions(opts StartOptions) error {
 	return nil
 }
 
+// WaitForRecovery 等待恢复完成
+// timeout: 超时时间，0 表示无限等待
+// 返回: 如果超时返回 ErrTimeout，如果队列已关闭返回 context.Canceled
+func (q *Queue) WaitForRecovery(timeout time.Duration) error {
+	if timeout == 0 {
+		// 无限等待
+		select {
+		case <-q.recoveryDone:
+			return nil
+		case <-q.ctx.Done():
+			return q.ctx.Err()
+		}
+	}
+
+	// 有超时限制
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-q.recoveryDone:
+		return nil
+	case <-timer.C:
+		return ErrTimeout
+	case <-q.ctx.Done():
+		return q.ctx.Err()
+	}
+}
+
 // Stop 停止 Queue
 func (q *Queue) Stop() error {
 	q.logger.Info("stopping queue")
@@ -256,19 +269,13 @@ func (q *Queue) Stop() error {
 	q.reserveMgr.stop()
 	q.logger.Debug("stopped reserve manager")
 
-	// 关闭 putChan，不再接受新的 Put 请求
-	// asyncPutWorker 会处理完 channel 中的剩余任务后自然退出
-	close(q.putChan)
-	q.logger.Debug("closed put channel")
-
-	// 等待异步 Put workers 处理完所有任务
-	// 注意：不能在这里调用 cancel()，否则 workers 会立即退出而不处理剩余任务
-	q.logger.Debug("waiting for async workers to finish")
-	q.wg.Wait()
-	q.logger.Debug("all async workers finished")
-
-	// 现在可以安全地取消 context 了
+	// 取消 context，停止所有后台 goroutine
 	q.cancel()
+
+	// 等待所有后台任务完成
+	q.logger.Debug("waiting for background tasks to finish")
+	q.wg.Wait()
+	q.logger.Debug("all background tasks finished")
 
 	// 关闭 Storage
 	if err := q.storage.Close(); err != nil {
@@ -296,90 +303,6 @@ func (q *Queue) applyRecoveryJobs(result *RecoveryResult) error {
 }
 
 // cleanupLoop 定期清理空 Topic
-// asyncPutWorker 异步处理 Put 请求的存储操作
-func (q *Queue) asyncPutWorker() {
-	defer q.wg.Done()
-
-	const (
-		maxBatchSize     = 100
-		maxBatchWaitTime = 100 * time.Millisecond
-	)
-
-	for {
-		// 从 channel 读取第一个请求
-		// 注意：不使用 ctx.Done() 分支，让 worker 处理完所有任务后才退出
-		req, ok := <-q.putChan
-		if !ok {
-			// Channel 已关闭，退出
-			return
-		}
-
-		// 收集批量请求
-		batch := []*putRequest{req}
-
-		// 尝试收集更多请求（最多等待 100ms 或收集 100 个）
-		timer := time.NewTimer(maxBatchWaitTime)
-
-	collectLoop:
-		for len(batch) < maxBatchSize {
-			select {
-			case req, ok := <-q.putChan:
-				if !ok {
-					// Channel 已关闭
-					break collectLoop
-				}
-				batch = append(batch, req)
-			case <-timer.C:
-				break collectLoop
-			default:
-				break collectLoop
-			}
-		}
-		timer.Stop()
-
-		// 批量写入存储
-		q.batchSaveJobs(batch)
-	}
-}
-
-// batchSaveJobs 批量保存任务到存储
-// 注意：实际的批量优化由 Storage 层内部处理（如 SQLiteStorage.SaveJob）
-func (q *Queue) batchSaveJobs(batch []*putRequest) {
-	ctx := context.Background()
-
-	q.logger.Debug("batch saving jobs", slog.Int("batch_size", len(batch)))
-
-	// 并发调用 SaveJob，让 Storage 层的 batchSaveLoop 能够收集到一批
-	// req.meta 已经在 Put 方法中克隆过,不会与 topicHub 中的 meta 冲突
-	var wg sync.WaitGroup
-	var failedCount atomic.Int32
-	for _, req := range batch {
-		wg.Add(1)
-		go func(r *putRequest) {
-			defer wg.Done()
-			if err := q.storage.SaveJob(ctx, r.meta, r.body); err != nil {
-				// 记录错误但继续处理
-				// 任务已经在内存队列中，即使存储失败也不影响处理
-				// 但重启后会丢失
-				failedCount.Add(1)
-				q.logger.Error("failed to save job in batch",
-					slog.Uint64("id", r.meta.ID),
-					slog.String("topic", r.meta.Topic),
-					slog.Any("error", err),
-				)
-			}
-		}(req)
-	}
-	wg.Wait()
-
-	if failed := failedCount.Load(); failed > 0 {
-		q.logger.Warn("batch save completed with errors",
-			slog.Int("batch_size", len(batch)),
-			slog.Int("failed", int(failed)),
-		)
-	}
-}
-
 func (q *Queue) cleanupLoop() {
 	defer q.wg.Done()
 
