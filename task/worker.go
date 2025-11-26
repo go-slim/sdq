@@ -82,29 +82,62 @@ func (w *Worker) worker() {
 			continue
 		}
 
-		// 处理任务
-		if err := w.handleJob(job); err != nil {
-			// TODO: 重试逻辑
+		// --- 任务处理 ---
+		task, ok := w.handlers[job.Meta.Topic]
+		if !ok {
+			// 没有找到处理器，直接埋葬
+			// TODO: Log this critical error
 			_ = job.Bury(job.Meta.Priority)
+			continue
+		}
+
+		// 执行任务处理器
+		if err := w.handleJob(job, task); err != nil {
+			// --- 失败处理逻辑 ---
+			// TODO: Log the handler error
+
+			// 检查是否还有重试次数
+			releases := job.Meta.Releases
+			maxRetries := task.config.MaxRetries
+
+			if releases < maxRetries {
+				// 还有重试机会，Release 任务并设置指数退避延迟
+				const BASE_RETRY_DELAY = 5 * time.Second
+				// 计算延迟: 5s, 10s, 20s, 40s, ...
+				delay := BASE_RETRY_DELAY * time.Duration(1<<uint(releases))
+				_ = job.Release(job.Meta.Priority, delay)
+			} else {
+				// 达到最大重试次数，埋葬任务
+				_ = job.Bury(job.Meta.Priority)
+			}
 		} else {
+			// --- 成功处理逻辑 ---
 			_ = job.Delete()
 		}
 	}
 }
 
 // handleJob 处理单个任务
-func (w *Worker) handleJob(job *sdq.Job) error {
-	t, ok := w.handlers[job.Meta.Topic]
-	if !ok {
-		return fmt.Errorf("no handler for task %q", job.Meta.Topic)
-	}
-
+func (w *Worker) handleJob(job *sdq.Job, t *Task) error {
 	// 获取任务数据
 	body, err := job.GetBody()
 	if err != nil {
 		return fmt.Errorf("failed to get job body: %w", err)
 	}
 
+	// --- TTR 控制 ---
+	// 创建一个比服务器 TTR 略短的上下文，以确保 Worker 能抢先处理超时
+	// 默认 1 秒的安全边际
+	const safetyMargin = 1 * time.Second
+	timeout := job.Meta.TTR - safetyMargin
+	if timeout <= 0 {
+		// 如果 TTR 太短，至少给一点点执行时间
+		timeout = job.Meta.TTR
+	}
+
+	ctx, cancel := context.WithTimeout(w.ctx, timeout)
+	defer cancel()
+
 	// 调用处理函数
-	return t.handler.Call(w.ctx, body)
+	return t.handler.Call(ctx, body)
 }

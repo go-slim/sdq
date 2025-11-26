@@ -371,7 +371,7 @@ var processOrder = task.Register("process-order", &task.Config{
     },
     Priority:   10,              // 默认优先级
     TTR:        60 * time.Second, // 默认超时时间
-    MaxRetries: 3,                // 最大重试次数（可选）
+    MaxRetries: 3,                // Worker 会自动处理重试，达到此次数后埋葬任务
 })
 ```
 
@@ -381,7 +381,7 @@ var processOrder = task.Register("process-order", &task.Config{
 - **FallbackHandler**: 失败处理函数（可选），当 Handler 返回错误时调用
 - **Priority**: 默认优先级（数字越小优先级越高）
 - **TTR**: 默认超时时间
-- **MaxRetries**: 最大重试次数（可选，当前版本需自行实现重试逻辑）
+- **MaxRetries**: 最大重试次数（可选，Worker 会自动处理重试，达到此次数后埋葬任务）
 
 ### 发布任务
 
@@ -404,6 +404,22 @@ _ = processOrder.Publish(ctx, OrderData{OrderID: 126},
 
 ### Worker
 
+`task.Worker` 是任务执行的核心，它负责从队列中拉取任务、执行处理函数、并根据执行结果和任务配置自动管理重试和失败策略。
+
+#### 工作原理
+
+1.  **并发消费**：`worker.Start(N)` 会启动 `N` 个并发的 Goroutine 来持续从队列中 `Reserve` 任务。
+2.  **任务超时控制 (TTR)**：`Worker` 会根据任务注册时配置的 `TTR` (`Time-To-Run`) 为每个任务创建一个独立的上下文 (`context.WithTimeout`)。这确保了任务在服务器的 TTR 到期之前，`Worker` 能主动检测并处理任务超时。
+    - 如果任务在 `TTR` 设定的时间内未能完成，`Worker` 会捕获 `context.DeadlineExceeded` 错误，并将其视为一次任务处理失败。
+3.  **智能重试**：
+    - 当任务处理器返回错误（包括 TTR 超时）时，`Worker` 不会立即丢弃任务。
+    - 它会检查 `job.Meta.Releases`（任务已经被 `Release` 的次数）是否小于 `task.Config.MaxRetries`。
+    - 如果**还有重试机会**，`Worker` 会调用 `job.Release()` 将任务重新放回队列。此时，`Worker` 会自动计算一个**指数退避 (Exponential Backoff)** 延迟（每次失败后等待的时间会逐渐增长，例如 5s, 10s, 20s...），以避免对下游服务造成冲击，并给系统恢复时间。
+    - 如果 `job.Meta.Releases` 已经**达到或超过** `task.Config.MaxRetries`，`Worker` 会调用 `job.Bury()` 将任务埋葬。被埋葬的任务将不再被自动调度，需要手动 `kick` 才能恢复，或进行人工排查。
+4.  **成功处理**：如果任务处理器成功执行且未返回错误，`Worker` 会调用 `job.Delete()` 将任务从队列中彻底移除。
+
+#### 使用示例
+
 ```go
 // 启动 Worker 处理多个任务类型
 worker := task.NewWorker(q,
@@ -413,9 +429,14 @@ worker := task.NewWorker(q,
 )
 
 // 启动 5 个并发 worker
+// 这些 Worker 会自动根据任务配置的 MaxRetries 和 TTR 处理任务的生命周期
 _ = worker.Start(5)
 defer worker.Stop()
 ```
+
+defer worker.Stop()
+
+````
 
 ## 持久化与恢复
 
@@ -440,7 +461,7 @@ Job Metadata (轻量级，约 200 字节):
 
 Job Body (可能很大):
 └── Body []byte (按需加载)
-```
+````
 
 **存储策略：**
 
@@ -655,64 +676,52 @@ c.Start()
 
 ### 重试机制
 
-**方式 1：使用 Release 实现重试**
+`sdq/task` 模块内置了强大的自动重试机制，您无需手动编写复杂的重试逻辑。`task.Worker` 会根据您在注册任务时 `Task.Config` 中设定的 `MaxRetries` 字段，自动处理任务失败后的重试流程。
+
+**工作原理：**
+
+1.  **配置 `MaxRetries`**：在 `task.Register` 时，为任务配置 `MaxRetries`（例如 `MaxRetries: 3` 表示最多重试 3 次）。
+2.  **错误捕获**：当 `Task` 的 `Handler` 返回错误，或者任务因 `TTR` (Time-To-Run) 超时而被 `Worker` 主动终止时，`Worker` 会捕获此失败。
+3.  **判断重试**：`Worker` 会检查任务的 `job.Meta.Releases` 计数（即任务已被 `Release` 的次数）是否小于 `MaxRetries`。
+4.  **智能 `Release`**：
+    - 如果 `job.Meta.Releases < MaxRetries`，`Worker` 会将任务 `Release` 回队列。为了避免对下游服务造成冲击，`Worker` 会自动计算一个**指数退避 (Exponential Backoff)** 延迟时间（例如第一次失败后等待 5 秒，第二次 10 秒，第三次 20 秒，依此类推），然后将任务放入延迟队列。
+    - 每次 `Release` 后，`job.Meta.Releases` 计数会自动递增。
+5.  **自动 `Bury`**：如果 `job.Meta.Releases` 达到或超过 `MaxRetries`，`Worker` 会将任务 `Bury`（埋葬）。被埋葬的任务将不再被自动调度，需要人工介入（例如通过 `kick` 命令）进行排查和恢复。
+
+**您需要做的：**
+
+- 在 `task.Config` 中配置 `MaxRetries`。
+- 确保您的 `Handler` 在业务逻辑失败时返回 `error`。
+- `Task Worker` 会自动处理后续的重试和埋葬。
+
+**示例（注册时配置 MaxRetries）：**
 
 ```go
-// Worker 处理任务
-job, err := q.Reserve([]string{"email"}, 5*time.Second)
-if err != nil {
-    return
-}
+var processOrder = task.Register("process-order", &task.Config{
+    Handler: func(ctx context.Context, data OrderData) error {
+        // ... 任务处理逻辑 ...
+        // 如果处理失败，返回 error
+        return fmt.Errorf("模拟处理失败")
+    },
+    MaxRetries: 5, // Worker 会自动处理最多 5 次重试
+    TTR:        30 * time.Second, // 任务处理超时时间
+})
 
-// 处理任务
-if err := process(job.Body()); err != nil {
-    // 处理失败，5 分钟后重试
-    _ = job.Release(job.Meta.Priority, 5*time.Minute)
-    return
-}
-
-// 处理成功，删除任务
-_ = job.Delete()
+// Worker 消费此任务，将自动处理重试逻辑
+// 无需在 Worker 中手动编写 job.Release() 或 job.Bury()
+worker := task.NewWorker(q, "process-order")
+_ = worker.Start(1)
+defer worker.Stop()
 ```
 
-**方式 2：指数退避重试**
-
-```go
-func processWithRetry(q *sdq.Queue, job *sdq.Job, maxRetries int) {
-    retries := job.Meta.Releases // 已重试次数
-
-    if err := process(job.Body()); err != nil {
-        if retries < maxRetries {
-            // 指数退避：1min, 2min, 4min, 8min...
-            delay := time.Duration(1<<retries) * time.Minute
-            _ = job.Release(job.Meta.Priority, delay)
-            log.Printf("Retry %d/%d after %v", retries+1, maxRetries, delay)
-        } else {
-            // 超过最大重试次数，埋葬任务
-            _ = job.Bury(job.Meta.Priority)
-            log.Printf("Max retries reached, buried job %d", job.Meta.ID)
-        }
-        return
     }
 
     // 处理成功
     _ = job.Delete()
+
 }
-```
 
-**方式 3：使用 Task API（未来支持）**
-
-```go
-// 注意：当前版本的 Task API 尚未实现自动重试
-// 以下为设计中的 API 示例
-var processOrder = task.Register("process-order", &task.Config{
-    Handler: func(ctx context.Context, data OrderData) error {
-        return process(data)
-    },
-    MaxRetries: 3,                    // 最大重试次数
-    RetryDelay: 5 * time.Minute,      // 重试延迟
-})
-```
+````
 
 ### 失败处理
 
