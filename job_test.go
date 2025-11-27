@@ -1,6 +1,7 @@
 package sdq
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -471,4 +472,153 @@ func TestJob_OperationMethods(t *testing.T) {
 		// 清理
 		_ = job.Delete()
 	})
+}
+
+// TestJobMeta_BoundaryValues 测试 JobMeta 的边界值情况
+func TestJobMeta_BoundaryValues(t *testing.T) {
+	t.Run("MaxJobID", func(t *testing.T) {
+		// 测试最大 JobID
+		maxID := uint64(math.MaxUint64)
+		meta := NewJobMeta(maxID, "test", 1, 0, 30*time.Second)
+
+		if meta.ID != maxID {
+			t.Errorf("ID = %d, want %d", meta.ID, maxID)
+		}
+
+		ReleaseJobMeta(meta)
+	})
+
+	t.Run("MaxPriority", func(t *testing.T) {
+		// 测试最大优先级
+		maxPriority := uint32(math.MaxUint32)
+		meta := NewJobMeta(1, "test", maxPriority, 0, 30*time.Second)
+
+		if meta.Priority != maxPriority {
+			t.Errorf("Priority = %d, want %d", meta.Priority, maxPriority)
+		}
+
+		ReleaseJobMeta(meta)
+	})
+
+	t.Run("ZeroPriority", func(t *testing.T) {
+		// 测试零优先级（应该是最高优先级）
+		meta := NewJobMeta(1, "test", 0, 0, 30*time.Second)
+
+		if meta.Priority != 0 {
+			t.Errorf("Priority = %d, want 0", meta.Priority)
+		}
+
+		ReleaseJobMeta(meta)
+	})
+
+	t.Run("ExtremelyLongDelay", func(t *testing.T) {
+		// 测试极长延迟（100年）
+		longDelay := 100 * 365 * 24 * time.Hour
+		meta := NewJobMeta(1, "test", 1, longDelay, 30*time.Second)
+
+		if meta.Delay != longDelay {
+			t.Errorf("Delay = %v, want %v", meta.Delay, longDelay)
+		}
+
+		// ReadyAt 应该是未来很久
+		if !meta.ReadyAt.After(time.Now().Add(99 * 365 * 24 * time.Hour)) {
+			t.Error("ReadyAt should be far in the future")
+		}
+
+		ReleaseJobMeta(meta)
+	})
+
+	t.Run("ZeroDelay", func(t *testing.T) {
+		// 测试零延迟（立即可用）
+		meta := NewJobMeta(1, "test", 1, 0, 30*time.Second)
+
+		if meta.Delay != 0 {
+			t.Errorf("Delay = %v, want 0", meta.Delay)
+		}
+
+		// ReadyAt 应该接近 CreatedAt
+		diff := meta.ReadyAt.Sub(meta.CreatedAt)
+		if diff < 0 || diff > time.Millisecond {
+			t.Errorf("ReadyAt should be close to CreatedAt, diff = %v", diff)
+		}
+
+		ReleaseJobMeta(meta)
+	})
+
+	t.Run("ZeroTTR", func(t *testing.T) {
+		// 测试零 TTR（可能导致立即超时）
+		meta := NewJobMeta(1, "test", 1, 0, 0)
+
+		if meta.TTR != 0 {
+			t.Errorf("TTR = %v, want 0", meta.TTR)
+		}
+
+		// 将任务标记为 Reserved
+		meta.State = StateReserved
+		meta.ReservedAt = time.Now()
+
+		// 应该立即超时
+		if !meta.ShouldTimeout(time.Now()) {
+			t.Error("Job with zero TTR should timeout immediately")
+		}
+
+		ReleaseJobMeta(meta)
+	})
+
+	t.Run("VeryLongTTR", func(t *testing.T) {
+		// 测试超长 TTR（100年）
+		longTTR := 100 * 365 * 24 * time.Hour
+		meta := NewJobMeta(1, "test", 1, 0, longTTR)
+
+		if meta.TTR != longTTR {
+			t.Errorf("TTR = %v, want %v", meta.TTR, longTTR)
+		}
+
+		ReleaseJobMeta(meta)
+	})
+
+	t.Run("MinimalJobMeta", func(t *testing.T) {
+		// 测试所有参数都是最小值
+		meta := NewJobMeta(0, "", 0, 0, 0)
+
+		if meta.ID != 0 {
+			t.Errorf("ID = %d, want 0", meta.ID)
+		}
+		if meta.Topic != "" {
+			t.Errorf("Topic = %s, want empty", meta.Topic)
+		}
+		if meta.Priority != 0 {
+			t.Errorf("Priority = %d, want 0", meta.Priority)
+		}
+
+		ReleaseJobMeta(meta)
+	})
+}
+
+// TestJobMeta_CounterOverflow 测试计数器溢出情况
+func TestJobMeta_CounterOverflow(t *testing.T) {
+	meta := NewJobMeta(1, "test", 1, 0, 30*time.Second)
+
+	// 将计数器设置为接近最大值
+	meta.Reserves = math.MaxInt - 1
+	meta.Timeouts = math.MaxInt - 1
+	meta.Releases = math.MaxInt - 1
+	meta.Buries = math.MaxInt - 1
+	meta.Kicks = math.MaxInt - 1
+	meta.Touches = math.MaxInt - 1
+
+	// 递增应该不会导致 panic（即使溢出）
+	meta.Reserves++
+	meta.Timeouts++
+	meta.Releases++
+	meta.Buries++
+	meta.Kicks++
+	meta.Touches++
+
+	// 验证值
+	if meta.Reserves != math.MaxInt {
+		t.Errorf("Reserves = %d, want %d", meta.Reserves, math.MaxInt)
+	}
+
+	ReleaseJobMeta(meta)
 }
