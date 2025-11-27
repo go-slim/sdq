@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -761,4 +762,262 @@ func TestSQLiteStorageAsyncUpdate(t *testing.T) {
 	}
 
 	ReleaseJobMeta(meta)
+}
+
+// TestSQLiteStorage_ConcurrentReadWrite tests high-concurrency read/write conflicts
+func TestSQLiteStorage_ConcurrentReadWrite(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	storage, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage error: %v", err)
+	}
+	defer func() { _ = storage.Close() }()
+
+	ctx := context.Background()
+
+	// Pre-populate with jobs
+	const numJobs = 100
+	for i := uint64(1); i <= numJobs; i++ {
+		meta := NewJobMeta(i, fmt.Sprintf("topic-%d", i%10), 10, 0, 30*time.Second)
+		err := storage.SaveJob(ctx, meta, []byte(fmt.Sprintf("body-%d", i)))
+		if err != nil {
+			t.Fatalf("SaveJob %d error: %v", i, err)
+		}
+		ReleaseJobMeta(meta)
+	}
+
+	const duration = 1 * time.Second
+	stopTime := time.Now().Add(duration)
+
+	var wg sync.WaitGroup
+	var readOps, writeOps, deleteOps uint64
+
+	// Concurrent readers
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for time.Now().Before(stopTime) {
+				id := uint64((time.Now().UnixNano() % numJobs) + 1)
+				_, _ = storage.GetJobMeta(ctx, id)
+				_, _ = storage.GetJobBody(ctx, id)
+				atomic.AddUint64(&readOps, 1)
+			}
+		}()
+	}
+
+	// Concurrent writers (updating jobs)
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for time.Now().Before(stopTime) {
+				id := uint64((time.Now().UnixNano() % numJobs) + 1)
+				meta, err := storage.GetJobMeta(ctx, id)
+				if err == nil {
+					meta.Reserves++
+					meta.State = StateReserved
+					_ = storage.UpdateJobMeta(ctx, meta)
+					ReleaseJobMeta(meta)
+					atomic.AddUint64(&writeOps, 1)
+				}
+			}
+		}()
+	}
+
+	// Concurrent scanners
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for time.Now().Before(stopTime) {
+				topic := fmt.Sprintf("topic-%d", workerID%10)
+				filter := &JobMetaFilter{Topic: topic, Limit: 10}
+				_, _ = storage.ScanJobMeta(ctx, filter)
+				_, _ = storage.CountJobs(ctx, filter)
+				atomic.AddUint64(&readOps, 1)
+			}
+		}(i)
+	}
+
+	// Concurrent delete/recreate operations
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		jobID := uint64(numJobs + 1)
+		for time.Now().Before(stopTime) {
+			meta := NewJobMeta(jobID, "test-delete", 10, 0, 30*time.Second)
+			_ = storage.SaveJob(ctx, meta, []byte("temp"))
+			_ = storage.DeleteJob(ctx, jobID)
+			ReleaseJobMeta(meta)
+			atomic.AddUint64(&deleteOps, 1)
+		}
+	}()
+
+	wg.Wait()
+
+	t.Logf("Completed: %d reads, %d writes, %d deletes",
+		atomic.LoadUint64(&readOps),
+		atomic.LoadUint64(&writeOps),
+		atomic.LoadUint64(&deleteOps))
+
+	// Verify storage is still consistent
+	stats, err := storage.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats error after concurrent operations: %v", err)
+	}
+
+	if stats.TotalJobs > numJobs+1 {
+		t.Errorf("TotalJobs = %d, should be <= %d", stats.TotalJobs, numJobs+1)
+	}
+}
+
+// TestSQLiteStorage_ConcurrentUpdates tests multiple goroutines updating same job
+func TestSQLiteStorage_ConcurrentUpdates(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	storage, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage error: %v", err)
+	}
+	defer func() { _ = storage.Close() }()
+
+	ctx := context.Background()
+
+	// Create a single job
+	meta := NewJobMeta(1, "test", 10, 0, 30*time.Second)
+	err = storage.SaveJob(ctx, meta, []byte("body"))
+	if err != nil {
+		t.Fatalf("SaveJob error: %v", err)
+	}
+	ReleaseJobMeta(meta)
+
+	// Multiple goroutines updating the same job
+	const numGoroutines = 20
+	const updatesPerGoroutine = 50
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(goroutineID int) {
+			defer wg.Done()
+			for j := 0; j < updatesPerGoroutine; j++ {
+				meta, err := storage.GetJobMeta(ctx, 1)
+				if err != nil {
+					t.Errorf("GetJobMeta error: %v", err)
+					return
+				}
+				meta.Reserves++
+				meta.State = State(goroutineID % 5) // Cycle through states
+				err = storage.UpdateJobMetaSync(ctx, meta)
+				if err != nil {
+					t.Errorf("UpdateJobMetaSync error: %v", err)
+				}
+				ReleaseJobMeta(meta)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify final state - some updates may be lost due to concurrent read-modify-write,
+	// but the job should still be in a valid state
+	finalMeta, err := storage.GetJobMeta(ctx, 1)
+	if err != nil {
+		t.Fatalf("GetJobMeta final error: %v", err)
+	}
+
+	// We expect some reserves (but not necessarily all due to lost updates from concurrent read-modify-write)
+	if finalMeta.Reserves == 0 {
+		t.Error("Expected some reserves to be recorded")
+	}
+
+	t.Logf("Final Reserves = %d (out of %d attempted updates)", finalMeta.Reserves, numGoroutines*updatesPerGoroutine)
+
+	ReleaseJobMeta(finalMeta)
+}
+
+// TestSQLiteStorage_StressTest tests storage under heavy load
+func TestSQLiteStorage_StressTest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping stress test in short mode")
+	}
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	storage, err := NewSQLiteStorage(dbPath, WithMaxBatchSize(500))
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage error: %v", err)
+	}
+	defer func() { _ = storage.Close() }()
+
+	ctx := context.Background()
+
+	const duration = 2 * time.Second
+	stopTime := time.Now().Add(duration)
+
+	var wg sync.WaitGroup
+	var jobCounter uint64 = 1000
+	var opCount uint64
+
+	// Concurrent job creators
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for time.Now().Before(stopTime) {
+				id := atomic.AddUint64(&jobCounter, 1)
+				meta := NewJobMeta(id, "stress-test", 10, 0, 30*time.Second)
+				_ = storage.SaveJob(ctx, meta, []byte("body"))
+				ReleaseJobMeta(meta)
+				atomic.AddUint64(&opCount, 1)
+			}
+		}()
+	}
+
+	// Concurrent readers
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for time.Now().Before(stopTime) {
+				id := atomic.LoadUint64(&jobCounter)
+				if id > 1000 {
+					_, _ = storage.GetJobMeta(ctx, id-uint64(time.Now().UnixNano()%100))
+				}
+				atomic.AddUint64(&opCount, 1)
+			}
+		}()
+	}
+
+	// Concurrent scanners
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for time.Now().Before(stopTime) {
+				filter := &JobMetaFilter{Topic: "stress-test", Limit: 100}
+				_, _ = storage.ScanJobMeta(ctx, filter)
+				atomic.AddUint64(&opCount, 1)
+				time.Sleep(10 * time.Millisecond)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	t.Logf("Stress test completed: %d operations", atomic.LoadUint64(&opCount))
+
+	// Verify storage is still functional
+	stats, err := storage.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats error after stress test: %v", err)
+	}
+
+	t.Logf("Final stats: %d jobs, %d topics", stats.TotalJobs, stats.TotalTopics)
 }

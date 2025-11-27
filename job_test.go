@@ -1,7 +1,9 @@
 package sdq
 
 import (
+	"fmt"
 	"math"
+	"sync"
 	"testing"
 	"time"
 )
@@ -621,4 +623,144 @@ func TestJobMeta_CounterOverflow(t *testing.T) {
 	}
 
 	ReleaseJobMeta(meta)
+}
+
+// TestJob_ConcurrentOperations 测试同一 Job 被多个操作同时修改
+func TestJob_ConcurrentOperations(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatal(err)
+		}
+
+		// 创建多个任务
+		const numJobs = 10
+		jobIDs := make([]uint64, numJobs)
+		for i := 0; i < numJobs; i++ {
+			id, err := q.Put("concurrent-ops", []byte(fmt.Sprintf("job-%d", i)), 1, 0, 5*time.Second)
+			if err != nil {
+				t.Fatalf("Put failed: %v", err)
+			}
+			jobIDs[i] = id
+		}
+
+		var wg sync.WaitGroup
+		const numWorkers = 20
+
+		// 多个 worker 并发操作这些任务
+		for i := 0; i < numWorkers; i++ {
+			wg.Add(1)
+			go func(workerID int) {
+				defer wg.Done()
+				for j := 0; j < 5; j++ {
+					// Reserve
+					job, err := q.Reserve([]string{"concurrent-ops"}, 100*time.Millisecond)
+					if err != nil {
+						continue
+					}
+
+					// 随机操作
+					switch workerID % 4 {
+					case 0:
+						// Delete
+						_ = job.Delete()
+					case 1:
+						// Release
+						_ = q.Release(job.Meta.ID, 1, 0)
+					case 2:
+						// Touch
+						_ = job.Touch()
+						time.Sleep(10 * time.Millisecond)
+						_ = job.Delete()
+					case 3:
+						// Bury
+						_ = job.Bury(5)
+					}
+				}
+			}(i)
+		}
+
+		wg.Wait()
+
+		// 验证没有 panic 或 deadlock
+		stats := q.Stats()
+		t.Logf("Final stats: Total=%d, Ready=%d, Reserved=%d, Buried=%d",
+			stats.TotalJobs, stats.ReadyJobs, stats.ReservedJobs, stats.BuriedJobs)
+	})
+}
+
+// TestJob_ConcurrentTouch 测试并发 Touch 操作
+func TestJob_ConcurrentTouch(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+		config.MaxTouches = 0       // 禁用次数限制
+		config.MaxTouchDuration = 0 // 禁用时长限制
+		config.MinTouchInterval = 0 // 禁用间隔限制
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatal(err)
+		}
+
+		// 创建并 Reserve 一个任务
+		id, _ := q.Put("touch-test", []byte("data"), 1, 0, 60*time.Second)
+		job, err := q.Reserve([]string{"touch-test"}, 1*time.Second)
+		if err != nil {
+			t.Fatalf("Reserve failed: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		const numGoroutines = 50
+		successCount := make([]int, numGoroutines)
+
+		// 多个 goroutine 同时 Touch 同一个任务
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				err := job.Touch()
+				if err == nil {
+					successCount[idx] = 1
+				}
+				time.Sleep(time.Millisecond)
+			}(i)
+		}
+
+		wg.Wait()
+
+		// 统计成功次数
+		total := 0
+		for _, count := range successCount {
+			total += count
+		}
+
+		t.Logf("Touch operations: %d/%d succeeded", total, numGoroutines)
+
+		// 验证 Touches 计数
+		meta, err := q.StatsJob(id)
+		if err != nil {
+			t.Fatalf("StatsJob failed: %v", err)
+		}
+
+		t.Logf("Final Touches count: %d", meta.Touches)
+
+		// 清理
+		_ = job.Delete()
+	})
 }

@@ -1,6 +1,7 @@
 package sdq
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -294,4 +295,139 @@ func TestDynamicSleepTicker_UpdateNextTickTime(t *testing.T) {
 	if tickCount == 0 {
 		t.Error("Should tick after updating NextTickTime")
 	}
+}
+
+// TestDynamicSleepTicker_ConcurrentRegisterUnregister tests high-frequency Register/Unregister operations
+func TestDynamicSleepTicker_ConcurrentRegisterUnregister(t *testing.T) {
+	ticker := NewDynamicSleepTicker(10*time.Millisecond, 1*time.Second)
+	ticker.Start()
+	defer ticker.Stop()
+
+	const numGoroutines = 50
+	const operationsPerGoroutine = 100
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < operationsPerGoroutine; j++ {
+				name := fmt.Sprintf("obj-%d-%d", id, j)
+				mock := newMockTickable(time.Now().Add(50 * time.Millisecond))
+				ticker.Register(name, mock)
+				ticker.Unregister(name)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// All objects should be unregistered
+	stats := ticker.Stats()
+	if stats.RegisteredCount != 0 {
+		t.Errorf("RegisteredCount = %d, want 0", stats.RegisteredCount)
+	}
+}
+
+// TestDynamicSleepTicker_ConcurrentProcessTickAndWakeup tests ProcessTick and Wakeup called simultaneously
+func TestDynamicSleepTicker_ConcurrentProcessTickAndWakeup(t *testing.T) {
+	ticker := NewDynamicSleepTicker(10*time.Millisecond, 1*time.Second)
+
+	// Register multiple objects
+	const numObjects = 20
+	for i := 0; i < numObjects; i++ {
+		name := fmt.Sprintf("obj-%d", i)
+		mock := newMockTickable(time.Now().Add(30 * time.Millisecond))
+		ticker.Register(name, mock)
+	}
+
+	ticker.Start()
+	defer ticker.Stop()
+
+	// Call Wakeup concurrently while ProcessTick is running
+	const numWakeups = 100
+	var wg sync.WaitGroup
+	wg.Add(numWakeups)
+
+	for i := 0; i < numWakeups; i++ {
+		go func() {
+			defer wg.Done()
+			ticker.Wakeup()
+		}()
+	}
+
+	// Wait a bit for processing
+	time.Sleep(100 * time.Millisecond)
+
+	wg.Wait()
+
+	// Should not panic and stats should be consistent
+	stats := ticker.Stats()
+	if stats.RegisteredCount != numObjects {
+		t.Errorf("RegisteredCount = %d, want %d", stats.RegisteredCount, numObjects)
+	}
+}
+
+// TestDynamicSleepTicker_ConcurrentOperations tests various concurrent operations
+func TestDynamicSleepTicker_ConcurrentOperations(t *testing.T) {
+	ticker := NewDynamicSleepTicker(10*time.Millisecond, 1*time.Second)
+	ticker.Start()
+	defer ticker.Stop()
+
+	const duration = 500 * time.Millisecond
+	stopTime := time.Now().Add(duration)
+
+	var wg sync.WaitGroup
+
+	// Concurrent registrations
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		counter := 0
+		for time.Now().Before(stopTime) {
+			name := fmt.Sprintf("reg-%d", counter)
+			mock := newMockTickable(time.Now().Add(20 * time.Millisecond))
+			ticker.Register(name, mock)
+			counter++
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	// Concurrent unregistrations
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		counter := 0
+		for time.Now().Before(stopTime) {
+			name := fmt.Sprintf("reg-%d", counter)
+			ticker.Unregister(name)
+			counter++
+			time.Sleep(7 * time.Millisecond)
+		}
+	}()
+
+	// Concurrent stats queries
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for time.Now().Before(stopTime) {
+			_ = ticker.Stats()
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+
+	// Concurrent wakeups
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for time.Now().Before(stopTime) {
+			ticker.Wakeup()
+			time.Sleep(15 * time.Millisecond)
+		}
+	}()
+
+	wg.Wait()
+
+	// Should complete without panics or deadlocks
 }

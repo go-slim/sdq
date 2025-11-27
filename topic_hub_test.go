@@ -763,3 +763,208 @@ func TestStress_ManyTopics(t *testing.T) {
 		t.Logf("Topic 统计: %d topics, %d jobs", stats.Topics, stats.TotalJobs)
 	})
 }
+
+// TestTopicHub_ConcurrentCreate 测试多 goroutine 同时创建同名 Topic
+func TestTopicHub_ConcurrentCreate(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatal(err)
+		}
+
+		const numGoroutines = 100
+		const sameTopic = "concurrent-topic"
+
+		var wg sync.WaitGroup
+		successCount := make([]int, numGoroutines)
+
+		// 100 个 goroutine 同时尝试在同一个 topic 中创建任务
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				id, err := q.Put(sameTopic, []byte(fmt.Sprintf("job-%d", idx)), 1, 0, 30*time.Second)
+				if err == nil && id != 0 {
+					successCount[idx] = 1
+				}
+			}(i)
+		}
+
+		wg.Wait()
+
+		// 统计成功创建的任务数
+		total := 0
+		for _, count := range successCount {
+			total += count
+		}
+
+		if total != numGoroutines {
+			t.Errorf("Expected %d jobs created, got %d", numGoroutines, total)
+		}
+
+		// 验证 topic 统计
+		stats, err := q.StatsTopic(sameTopic)
+		if err != nil {
+			t.Fatalf("StatsTopic error: %v", err)
+		}
+		if stats == nil {
+			t.Fatal("Topic stats should not be nil")
+		}
+
+		if stats.TotalJobs != numGoroutines {
+			t.Errorf("TotalJobs = %d, want %d", stats.TotalJobs, numGoroutines)
+		}
+	})
+}
+
+// TestTopicHub_ConcurrentOperations 测试 Topic 的并发操作
+func TestTopicHub_ConcurrentOperations(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatal(err)
+		}
+
+		const numTopics = 10
+		const jobsPerTopic = 50
+
+		var wg sync.WaitGroup
+
+		// 并发创建多个 topics 和 jobs
+		for i := 0; i < numTopics; i++ {
+			topic := fmt.Sprintf("topic-%d", i)
+			for j := 0; j < jobsPerTopic; j++ {
+				wg.Add(1)
+				go func(t string, idx int) {
+					defer wg.Done()
+					_, _ = q.Put(t, []byte(fmt.Sprintf("job-%d", idx)), uint32(idx%10), 0, 30*time.Second)
+				}(topic, j)
+			}
+		}
+
+		wg.Wait()
+
+		// 验证所有 topics 都被创建
+		topics := q.ListTopics()
+		if len(topics) != numTopics {
+			t.Errorf("Created topics = %d, want %d", len(topics), numTopics)
+		}
+
+		// 验证总任务数
+		stats := q.Stats()
+		expectedJobs := numTopics * jobsPerTopic
+		if stats.TotalJobs != expectedJobs {
+			t.Errorf("TotalJobs = %d, want %d", stats.TotalJobs, expectedJobs)
+		}
+	})
+}
+
+// TestTopicHub_ConcurrentReadWrite 测试并发读写操作
+func TestTopicHub_ConcurrentReadWrite(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatal(err)
+		}
+
+		const duration = 2 * time.Second
+		stopChan := make(chan struct{})
+
+		var wg sync.WaitGroup
+		var putCount, reserveCount sync.Map
+
+		// Writer goroutines
+		for i := 0; i < 5; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				count := 0
+				for {
+					select {
+					case <-stopChan:
+						putCount.Store(id, count)
+						return
+					default:
+						_, _ = q.Put("concurrent-test", []byte("data"), 1, 0, 30*time.Second)
+						count++
+						time.Sleep(time.Millisecond)
+					}
+				}
+			}(i)
+		}
+
+		// Reader goroutines
+		for i := 0; i < 5; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				count := 0
+				for {
+					select {
+					case <-stopChan:
+						reserveCount.Store(id, count)
+						return
+					default:
+						job, err := q.Reserve([]string{"concurrent-test"}, 10*time.Millisecond)
+						if err == nil && job != nil {
+							_ = job.Delete()
+							count++
+						}
+					}
+				}
+			}(i)
+		}
+
+		// 运行指定时间
+		time.Sleep(duration)
+		close(stopChan)
+		wg.Wait()
+
+		// 统计总数
+		totalPut := 0
+		putCount.Range(func(_, value interface{}) bool {
+			totalPut += value.(int)
+			return true
+		})
+
+		totalReserve := 0
+		reserveCount.Range(func(_, value interface{}) bool {
+			totalReserve += value.(int)
+			return true
+		})
+
+		t.Logf("Concurrent operations: Put=%d, Reserve=%d", totalPut, totalReserve)
+
+		// 验证没有 panic 或 deadlock
+		if totalPut == 0 {
+			t.Error("No jobs were put")
+		}
+	})
+}

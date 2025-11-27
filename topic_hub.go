@@ -96,11 +96,11 @@ func (h *TopicHub) UnregisterFromTicker(name string) {
 
 // TryReserve 尝试从指定 topics 预留任务
 func (h *TopicHub) TryReserve(topics []string) *JobMeta {
-	var reservedTopicName string
-	var reservedTopic *topic
 	var meta *JobMeta
+	var metaClone *JobMeta
 
 	h.mu.Lock()
+
 	for _, topicName := range topics {
 		t, ok := h.topics[topicName]
 		if !ok {
@@ -120,19 +120,19 @@ func (h *TopicHub) TryReserve(topics []string) *JobMeta {
 
 		t.addReserved(meta)
 
-		// 更新到 Storage
-		_ = h.storage.UpdateJobMeta(context.Background(), meta)
+		// 克隆用于 Storage 更新（避免锁外访问）
+		metaClone = meta.Clone()
 
-		// 记录需要注册到 Ticker 的 topic
-		reservedTopicName = topicName
-		reservedTopic = t
+		// 注册到 Ticker（已持有锁）
+		h.registerToTickerLocked(topicName, t)
 		break
 	}
+
 	h.mu.Unlock()
 
-	// 在锁外注册到 Ticker，避免死锁
-	if reservedTopic != nil {
-		h.RegisterToTicker(reservedTopicName, reservedTopic)
+	// 更新到 Storage（移到锁外）
+	if metaClone != nil {
+		_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
 	}
 
 	return meta
@@ -321,10 +321,10 @@ func (h *TopicHub) Put(topicName string, meta *JobMeta) (bool, error) {
 		needsWakeup = true // 需要唤醒 ticker
 	}
 
-	h.mu.Unlock()
+	// 注册到 Ticker（已持有锁）
+	h.registerToTickerLocked(topicName, t)
 
-	// 注册到 Ticker（在锁外，避免死锁）
-	h.RegisterToTicker(topicName, t)
+	h.mu.Unlock()
 
 	// 唤醒 Ticker（在锁外，避免死锁）
 	if needsWakeup {
@@ -422,10 +422,13 @@ func (h *TopicHub) Release(id uint64, priority uint32, delay time.Duration) (str
 	// 注册到 Ticker（使用 locked 版本，因为已持有锁）
 	h.registerToTickerLocked(topicName, topic)
 
+	// 克隆用于 Storage 更新（避免锁外访问）
+	metaClone := meta.Clone()
+
 	h.mu.Unlock()
 
 	// 更新到 Storage（移到锁外）
-	_ = h.storage.UpdateJobMeta(context.Background(), meta)
+	_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
 
 	return topicName, needsNotify, nil
 }
@@ -465,10 +468,13 @@ func (h *TopicHub) Bury(id uint64, priority uint32) error {
 		h.UnregisterFromTicker(topicName)
 	}
 
+	// 克隆用于 Storage 更新（避免锁外访问）
+	metaClone := meta.Clone()
+
 	h.mu.Unlock()
 
 	// 更新到 Storage（移到锁外）
-	_ = h.storage.UpdateJobMeta(context.Background(), meta)
+	_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
 
 	return nil
 }
@@ -477,13 +483,14 @@ func (h *TopicHub) Bury(id uint64, priority uint32) error {
 // 返回 (kicked int, needsNotify bool, error)
 func (h *TopicHub) Kick(topicName string, bound int) (int, bool, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	t := h.GetTopic(topicName)
 	if t == nil {
+		h.mu.Unlock()
 		return 0, false, nil
 	}
 
+	var metaClones []*JobMeta
 	kicked := 0
 	for range bound {
 		meta := t.popBuried()
@@ -498,10 +505,17 @@ func (h *TopicHub) Kick(topicName string, bound int) (int, bool, error) {
 
 		t.pushReady(meta)
 
-		// 更新到 Storage
-		_ = h.storage.UpdateJobMeta(context.Background(), meta)
+		// 克隆用于 Storage 更新
+		metaClones = append(metaClones, meta.Clone())
 
 		kicked++
+	}
+
+	h.mu.Unlock()
+
+	// 更新到 Storage（移到锁外）
+	for _, metaClone := range metaClones {
+		_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
 	}
 
 	needsNotify := kicked > 0
@@ -512,15 +526,16 @@ func (h *TopicHub) Kick(topicName string, bound int) (int, bool, error) {
 // 返回 (topicName string, error)
 func (h *TopicHub) KickJob(id uint64) (string, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	// 查找任务
 	meta, topic := h.FindJob(id)
 	if meta == nil {
+		h.mu.Unlock()
 		return "", ErrNotFound
 	}
 
 	if meta.State != StateBuried {
+		h.mu.Unlock()
 		return "", ErrNotBuried
 	}
 
@@ -535,8 +550,13 @@ func (h *TopicHub) KickJob(id uint64) (string, error) {
 
 	topic.pushReady(meta)
 
-	// 更新到 Storage
-	_ = h.storage.UpdateJobMeta(context.Background(), meta)
+	// 克隆用于 Storage 更新（避免锁外访问）
+	metaClone := meta.Clone()
+
+	h.mu.Unlock()
+
+	// 更新到 Storage（移到锁外）
+	_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
 
 	return topicName, nil
 }
@@ -544,20 +564,22 @@ func (h *TopicHub) KickJob(id uint64) (string, error) {
 // Touch 延长任务的 TTR
 func (h *TopicHub) Touch(id uint64, config *Config, duration ...time.Duration) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	// 查找任务
 	meta, topic := h.FindJob(id)
 	if meta == nil {
+		h.mu.Unlock()
 		return ErrNotFound
 	}
 
 	if meta.State != StateReserved {
+		h.mu.Unlock()
 		return ErrNotReserved
 	}
 
 	// 检查 Touch 次数限制
 	if config.MaxTouches > 0 && meta.Touches >= config.MaxTouches {
+		h.mu.Unlock()
 		return ErrTouchLimitExceeded
 	}
 
@@ -567,6 +589,7 @@ func (h *TopicHub) Touch(id uint64, config *Config, duration ...time.Duration) e
 	if config.MinTouchInterval > 0 && meta.Touches > 0 {
 		// 使用 LastTouchAt 检查间隔
 		if now.Sub(meta.LastTouchAt) < config.MinTouchInterval {
+			h.mu.Unlock()
 			return ErrInvalidTouchTime
 		}
 	}
@@ -585,6 +608,7 @@ func (h *TopicHub) Touch(id uint64, config *Config, duration ...time.Duration) e
 	if config.MaxTouchDuration > 0 {
 		totalExtended := meta.TotalTouchTime + extendDuration
 		if totalExtended > config.MaxTouchDuration {
+			h.mu.Unlock()
 			return ErrTouchLimitExceeded
 		}
 	}
@@ -605,8 +629,13 @@ func (h *TopicHub) Touch(id uint64, config *Config, duration ...time.Duration) e
 	// 更新 Reserved 映射中的引用
 	topic.addReserved(meta)
 
-	// 更新到 Storage
-	_ = h.storage.UpdateJobMeta(context.Background(), meta)
+	// 克隆用于 Storage 更新（避免锁外访问）
+	metaClone := meta.Clone()
+
+	h.mu.Unlock()
+
+	// 更新到 Storage（移到锁外）
+	_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
 
 	return nil
 }
