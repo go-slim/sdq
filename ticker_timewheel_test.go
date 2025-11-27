@@ -426,3 +426,157 @@ func TestTimeWheelTicker_ConcurrentOperations(t *testing.T) {
 
 	// Should complete without panics or deadlocks
 }
+
+// panicTickable 用于测试 panic 恢复的 Tickable 实现
+type panicTickable struct {
+	mu           sync.Mutex
+	nextTickTime time.Time
+	tickCount    int
+	shouldPanic  bool
+	panicMsg     string
+}
+
+func newPanicTickable(nextTime time.Time, shouldPanic bool, msg string) *panicTickable {
+	return &panicTickable{
+		nextTickTime: nextTime,
+		shouldPanic:  shouldPanic,
+		panicMsg:     msg,
+	}
+}
+
+func (p *panicTickable) ProcessTick(now time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.tickCount++
+	// 重新调度下一次 tick
+	p.nextTickTime = now.Add(50 * time.Millisecond)
+	if p.shouldPanic {
+		panic(p.panicMsg)
+	}
+}
+
+func (p *panicTickable) NextTickTime() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.nextTickTime
+}
+
+func (p *panicTickable) NeedsTick() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return !p.nextTickTime.IsZero()
+}
+
+func (p *panicTickable) GetTickCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.tickCount
+}
+
+func (p *panicTickable) SetShouldPanic(shouldPanic bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.shouldPanic = shouldPanic
+}
+
+// TestTimeWheelTicker_PanicRecovery 测试 ProcessTick panic 时的恢复
+func TestTimeWheelTicker_PanicRecovery(t *testing.T) {
+	ticker := NewTimeWheelTicker(50*time.Millisecond, 10)
+	ticker.Start()
+	defer ticker.Stop()
+
+	// 创建一个会 panic 的 tickable 和一个正常的 tickable
+	panicObj := newPanicTickable(time.Now().Add(10*time.Millisecond), true, "simulated panic")
+	normalObj := newMockTickable(time.Now().Add(10 * time.Millisecond))
+
+	ticker.Register("panic-task", panicObj)
+	ticker.Register("normal-task", normalObj)
+
+	// 等待 tick 处理
+	time.Sleep(200 * time.Millisecond)
+
+	// 验证正常任务仍然被处理（即使另一个任务 panic）
+	normalTickCount := normalObj.GetTickCount()
+	panicTickCount := panicObj.GetTickCount()
+
+	if normalTickCount == 0 {
+		t.Error("Normal task should have been ticked despite panic in another task")
+	}
+
+	if panicTickCount == 0 {
+		t.Error("Panic task should have been called at least once")
+	}
+
+	t.Logf("Normal task ticked %d times, panic task ticked %d times", normalTickCount, panicTickCount)
+
+	// Ticker 应该仍然在运行
+	stats := ticker.Stats()
+	if stats.RegisteredCount != 2 {
+		t.Errorf("RegisteredCount = %d, want 2", stats.RegisteredCount)
+	}
+}
+
+// TestTimeWheelTicker_MultiplePanics 测试多个任务同时 panic
+func TestTimeWheelTicker_MultiplePanics(t *testing.T) {
+	ticker := NewTimeWheelTicker(50*time.Millisecond, 10)
+	ticker.Start()
+	defer ticker.Stop()
+
+	// 创建多个会 panic 的任务
+	const numPanicTasks = 5
+	panicTasks := make([]*panicTickable, numPanicTasks)
+	for i := 0; i < numPanicTasks; i++ {
+		panicTasks[i] = newPanicTickable(time.Now().Add(10*time.Millisecond), true, fmt.Sprintf("panic-%d", i))
+		ticker.Register(fmt.Sprintf("panic-task-%d", i), panicTasks[i])
+	}
+
+	// 等待处理
+	time.Sleep(200 * time.Millisecond)
+
+	// 验证所有任务都被调用了（尽管它们 panic）
+	for i, task := range panicTasks {
+		count := task.GetTickCount()
+		if count == 0 {
+			t.Errorf("Panic task %d was not ticked", i)
+		}
+	}
+
+	// Ticker 应该仍然正常运行
+	stats := ticker.Stats()
+	if stats.RegisteredCount != numPanicTasks {
+		t.Errorf("RegisteredCount = %d, want %d", stats.RegisteredCount, numPanicTasks)
+	}
+}
+
+// TestTimeWheelTicker_RecoverAfterPanic 测试 panic 后任务能否继续运行
+func TestTimeWheelTicker_RecoverAfterPanic(t *testing.T) {
+	ticker := NewTimeWheelTicker(50*time.Millisecond, 10)
+	ticker.Start()
+	defer ticker.Stop()
+
+	// 创建一个任务，第一次 panic，然后正常运行
+	task := newPanicTickable(time.Now().Add(60*time.Millisecond), true, "first panic")
+	ticker.Register("recover-task", task)
+
+	// 等待第一次 tick（会 panic）
+	time.Sleep(150 * time.Millisecond)
+
+	firstCount := task.GetTickCount()
+	if firstCount == 0 {
+		t.Error("Task should have been ticked at least once")
+	}
+	t.Logf("After first wait: task ticked %d times", firstCount)
+
+	// 禁用 panic
+	task.SetShouldPanic(false)
+
+	// 等待更多 tick
+	time.Sleep(200 * time.Millisecond)
+
+	secondCount := task.GetTickCount()
+	if secondCount <= firstCount {
+		t.Errorf("Task should continue ticking after panic recovery, first=%d, second=%d", firstCount, secondCount)
+	}
+
+	t.Logf("Task ticked %d times total (including panic)", secondCount)
+}

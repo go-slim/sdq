@@ -245,7 +245,18 @@ func (w *DynamicSleepTicker) processTick() {
 			continue
 		}
 
-		ct.tickable.ProcessTick(now)
+		// Panic 恢复保护
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					// 记录 panic 但不影响其他任务处理
+					// TODO: 添加日志记录
+					_ = r
+				}
+			}()
+			ct.tickable.ProcessTick(now)
+		}()
+
 		// 标记为 dirty，下次需要重新计算
 		ct.dirty = true
 	}

@@ -203,7 +203,17 @@ func (w *TimeWheelTicker) processTick(now time.Time) {
 	for _, task := range tasks {
 		// 检查是否真的到期
 		if !task.tickTime.After(now) {
-			task.tickable.ProcessTick(now)
+			// Panic 恢复保护
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// 记录 panic 但不影响其他任务处理
+						// TODO: 添加日志记录
+						_ = r
+					}
+				}()
+				task.tickable.ProcessTick(now)
+			}()
 
 			// 重新调度
 			w.mu.Lock()

@@ -262,3 +262,118 @@ func indexOf(s, substr string) int {
 	}
 	return -1
 }
+
+// TestHandler_PanicRecovery 测试 Handler 在处理函数 panic 时的恢复
+func TestHandler_PanicRecovery(t *testing.T) {
+	type TestData struct {
+		Value string `json:"value"`
+	}
+
+	t.Run("panic in handler with context", func(t *testing.T) {
+		h, err := newHandler(func(ctx context.Context, data TestData) error {
+			panic("simulated panic in handler")
+		})
+		if err != nil {
+			t.Fatalf("newHandler() error: %v", err)
+		}
+
+		data := `{"value":"test"}`
+		err = h.Call(context.Background(), []byte(data))
+		if err == nil {
+			t.Error("Call() expected error from panic, got nil")
+		}
+		if !contains(err.Error(), "handler panic") {
+			t.Errorf("Call() error = %v, want to contain %q", err, "handler panic")
+		}
+		if !contains(err.Error(), "simulated panic") {
+			t.Errorf("Call() error = %v, want to contain panic message", err)
+		}
+	})
+
+	t.Run("panic in handler without context", func(t *testing.T) {
+		h, err := newHandler(func(data TestData) error {
+			panic("another panic")
+		})
+		if err != nil {
+			t.Fatalf("newHandler() error: %v", err)
+		}
+
+		data := `{"value":"test"}`
+		err = h.Call(context.Background(), []byte(data))
+		if err == nil {
+			t.Error("Call() expected error from panic, got nil")
+		}
+		if !contains(err.Error(), "handler panic") {
+			t.Errorf("Call() error = %v, want to contain %q", err, "handler panic")
+		}
+	})
+
+	t.Run("panic with different types", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			panicValue any
+		}{
+			{"string panic", "panic message"},
+			{"error panic", errors.New("panic error")},
+			{"int panic", 42},
+			{"nil panic", nil},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				h, err := newHandler(func(data TestData) error {
+					panic(tt.panicValue)
+				})
+				if err != nil {
+					t.Fatalf("newHandler() error: %v", err)
+				}
+
+				data := `{"value":"test"}`
+				err = h.Call(context.Background(), []byte(data))
+				if err == nil {
+					t.Error("Call() expected error from panic, got nil")
+				}
+				if !contains(err.Error(), "handler panic") {
+					t.Errorf("Call() error = %v, want to contain %q", err, "handler panic")
+				}
+			})
+		}
+	})
+
+	t.Run("normal execution after panic recovery", func(t *testing.T) {
+		shouldPanic := true
+		callCount := 0
+
+		h, err := newHandler(func(data TestData) error {
+			callCount++
+			if shouldPanic {
+				panic("first call panics")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("newHandler() error: %v", err)
+		}
+
+		data := `{"value":"test"}`
+
+		// 第一次调用会 panic
+		err = h.Call(context.Background(), []byte(data))
+		if err == nil {
+			t.Error("First call expected error from panic, got nil")
+		}
+		if callCount != 1 {
+			t.Errorf("callCount = %d, want 1", callCount)
+		}
+
+		// 第二次调用正常执行
+		shouldPanic = false
+		err = h.Call(context.Background(), []byte(data))
+		if err != nil {
+			t.Errorf("Second call unexpected error: %v", err)
+		}
+		if callCount != 2 {
+			t.Errorf("callCount = %d, want 2", callCount)
+		}
+	})
+}

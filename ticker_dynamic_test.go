@@ -431,3 +431,99 @@ func TestDynamicSleepTicker_ConcurrentOperations(t *testing.T) {
 
 	// Should complete without panics or deadlocks
 }
+
+// TestDynamicSleepTicker_PanicRecovery 测试 ProcessTick panic 时的恢复
+func TestDynamicSleepTicker_PanicRecovery(t *testing.T) {
+	ticker := NewDynamicSleepTicker(50*time.Millisecond, 100*time.Millisecond)
+	ticker.Start()
+	defer ticker.Stop()
+
+	// 创建一个会 panic 的 tickable 和一个正常的 tickable
+	panicObj := newPanicTickable(time.Now().Add(60*time.Millisecond), true, "simulated panic")
+	normalObj := newPanicTickable(time.Now().Add(60*time.Millisecond), false, "")
+
+	ticker.Register("panic-task", panicObj)
+	ticker.Register("normal-task", normalObj)
+
+	// 等待 tick 处理
+	time.Sleep(200 * time.Millisecond)
+
+	// 验证正常任务仍然被处理（即使另一个任务 panic）
+	normalTickCount := normalObj.GetTickCount()
+	panicTickCount := panicObj.GetTickCount()
+
+	if normalTickCount == 0 {
+		t.Error("Normal task should have been ticked despite panic in another task")
+	}
+
+	if panicTickCount == 0 {
+		t.Error("Panic task should have been called at least once")
+	}
+
+	t.Logf("Normal task ticked %d times, panic task ticked %d times", normalTickCount, panicTickCount)
+}
+
+// TestDynamicSleepTicker_MultiplePanics 测试多个任务同时 panic
+func TestDynamicSleepTicker_MultiplePanics(t *testing.T) {
+	ticker := NewDynamicSleepTicker(50*time.Millisecond, 100*time.Millisecond)
+	ticker.Start()
+	defer ticker.Stop()
+
+	// 创建多个会 panic 的任务
+	numPanicTasks := 5
+	panicTasks := make([]*panicTickable, numPanicTasks)
+	for i := 0; i < numPanicTasks; i++ {
+		panicTasks[i] = newPanicTickable(time.Now().Add(60*time.Millisecond), true, fmt.Sprintf("panic %d", i))
+		ticker.Register(fmt.Sprintf("panic-task-%d", i), panicTasks[i])
+	}
+
+	// 等待处理
+	time.Sleep(200 * time.Millisecond)
+
+	// 验证所有任务都被调用了
+	for i, task := range panicTasks {
+		count := task.GetTickCount()
+		if count == 0 {
+			t.Errorf("Panic task %d was not ticked", i)
+		}
+	}
+
+	// Ticker 应该仍然正常运行
+	stats := ticker.Stats()
+	if stats.RegisteredCount != numPanicTasks {
+		t.Errorf("RegisteredCount = %d, want %d", stats.RegisteredCount, numPanicTasks)
+	}
+}
+
+// TestDynamicSleepTicker_RecoverAfterPanic 测试 panic 后任务能否继续运行
+func TestDynamicSleepTicker_RecoverAfterPanic(t *testing.T) {
+	ticker := NewDynamicSleepTicker(50*time.Millisecond, 100*time.Millisecond)
+	ticker.Start()
+	defer ticker.Stop()
+
+	// 创建一个任务，第一次 panic，然后正常运行
+	task := newPanicTickable(time.Now().Add(60*time.Millisecond), true, "first panic")
+	ticker.Register("recover-task", task)
+
+	// 等待第一次 tick（会 panic）
+	time.Sleep(150 * time.Millisecond)
+
+	firstCount := task.GetTickCount()
+	if firstCount == 0 {
+		t.Error("Task should have been ticked at least once")
+	}
+	t.Logf("After first wait: task ticked %d times", firstCount)
+
+	// 禁用 panic
+	task.SetShouldPanic(false)
+
+	// 等待更多 tick
+	time.Sleep(200 * time.Millisecond)
+
+	secondCount := task.GetTickCount()
+	if secondCount <= firstCount {
+		t.Errorf("Task should continue ticking after panic recovery, first=%d, second=%d", firstCount, secondCount)
+	}
+
+	t.Logf("Task ticked %d times total (including panic)", secondCount)
+}

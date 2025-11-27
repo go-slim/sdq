@@ -118,11 +118,18 @@ func (w *Worker) worker() {
 }
 
 // handleJob 处理单个任务
-func (w *Worker) handleJob(job *sdq.Job, t *Task) error {
+func (w *Worker) handleJob(job *sdq.Job, t *Task) (err error) {
+	// Panic 恢复（双重保护）
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("job processing panic: %v", r)
+		}
+	}()
+
 	// 获取任务数据
-	body, err := job.GetBody()
-	if err != nil {
-		return fmt.Errorf("failed to get job body: %w", err)
+	body, e := job.GetBody()
+	if e != nil {
+		return fmt.Errorf("failed to get job body: %w", e)
 	}
 
 	// --- TTR 控制 ---

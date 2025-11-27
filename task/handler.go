@@ -71,7 +71,14 @@ func newHandler(handler any) (*Handler, error) {
 }
 
 // Call 调用处理函数
-func (h *Handler) Call(ctx context.Context, data []byte) error {
+func (h *Handler) Call(ctx context.Context, data []byte) (err error) {
+	// Panic 恢复
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("handler panic: %v", r)
+		}
+	}()
+
 	// 创建数据对象
 	dataVal := reflect.New(h.dataType)
 
