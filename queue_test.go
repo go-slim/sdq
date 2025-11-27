@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -1456,6 +1457,351 @@ func TestReserve_TTRTimeout_Multiple(t *testing.T) {
 				t.Errorf("job %d Reserves = %d, want 2", i, job.Meta.Reserves)
 			}
 			_ = job.Delete()
+		}
+	})
+}
+
+// TestQueue_BoundaryConditions 测试 Queue 的边界条件
+func TestQueue_BoundaryConditions(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		t.Run("EmptyTopicName", func(t *testing.T) {
+			// 测试空 Topic 名称
+			_, err := q.Put("", []byte("body"), 1, 0, 30*time.Second)
+			if err != ErrTopicRequired {
+				t.Errorf("Put with empty topic = %v, want ErrTopicRequired", err)
+			}
+		})
+
+		t.Run("InvalidTopicName", func(t *testing.T) {
+			// 测试无效 Topic 名称（包含特殊字符）
+			invalidTopics := []string{
+				"topic with space",
+				"topic!special",
+				"topic@symbol",
+				"topic#hash",
+				"topic$dollar",
+				"中文主题", // 非ASCII字符
+			}
+
+			for _, topic := range invalidTopics {
+				_, err := q.Put(topic, []byte("body"), 1, 0, 30*time.Second)
+				if err != ErrInvalidTopic {
+					t.Errorf("Put with invalid topic %q = %v, want ErrInvalidTopic", topic, err)
+				}
+			}
+		})
+
+		t.Run("VeryLongTopicName", func(t *testing.T) {
+			// 测试超长 Topic 名称（>200字符）
+			longTopicBytes := make([]byte, 201)
+			for i := range longTopicBytes {
+				longTopicBytes[i] = byte('a' + i%26)
+			}
+			longTopic := string(longTopicBytes)
+
+			_, err := q.Put(longTopic, []byte("body"), 1, 0, 30*time.Second)
+			if err != ErrInvalidTopic {
+				t.Errorf("Put with long topic = %v, want ErrInvalidTopic", err)
+			}
+		})
+
+		t.Run("NilBody", func(t *testing.T) {
+			// 测试 nil Body
+			id, err := q.Put("test-nil-body", nil, 1, 0, 30*time.Second)
+			if err != nil {
+				t.Fatalf("Put with nil body failed: %v", err)
+			}
+
+			// 应该能够 Reserve
+			job, err := q.Reserve([]string{"test-nil-body"}, 1*time.Second)
+			if err != nil {
+				t.Fatalf("Reserve failed: %v", err)
+			}
+
+			// Body 应该是空切片
+			body := job.Body()
+			if len(body) != 0 {
+				t.Errorf("Body length = %d, want 0", len(body))
+			}
+
+			_ = job.Delete()
+			_ = q.Delete(id)
+		})
+
+		t.Run("EmptyBody", func(t *testing.T) {
+			// 测试空 Body
+			id, err := q.Put("test-empty-body", []byte{}, 1, 0, 30*time.Second)
+			if err != nil {
+				t.Fatalf("Put with empty body failed: %v", err)
+			}
+
+			job, err := q.Reserve([]string{"test-empty-body"}, 1*time.Second)
+			if err != nil {
+				t.Fatalf("Reserve failed: %v", err)
+			}
+
+			if len(job.Body()) != 0 {
+				t.Errorf("Body length = %d, want 0", len(job.Body()))
+			}
+
+			_ = q.Delete(id)
+		})
+
+		t.Run("MaxJobSize", func(t *testing.T) {
+			// 测试超过 MaxJobSize 的 Body
+			maxSize := config.MaxJobSize
+			if maxSize == 0 {
+				maxSize = 64 * 1024 // 默认值
+			}
+
+			// 创建一个刚好超过限制的 Body
+			largeBody := make([]byte, maxSize+1)
+			for i := range largeBody {
+				largeBody[i] = byte(i % 256)
+			}
+
+			_, err := q.Put("test-large-body", largeBody, 1, 0, 30*time.Second)
+			if err == nil {
+				t.Error("Put with oversized body should return error")
+			}
+		})
+
+		t.Run("ExactMaxJobSize", func(t *testing.T) {
+			// 测试刚好等于 MaxJobSize 的 Body（应该成功）
+			maxSize := config.MaxJobSize
+			if maxSize == 0 {
+				maxSize = 64 * 1024
+			}
+
+			exactBody := make([]byte, maxSize)
+			for i := range exactBody {
+				exactBody[i] = byte(i % 256)
+			}
+
+			id, err := q.Put("test-exact-size", exactBody, 1, 0, 30*time.Second)
+			if err != nil {
+				t.Errorf("Put with exact max size failed: %v", err)
+			}
+
+			if id != 0 {
+				_ = q.Delete(id)
+			}
+		})
+
+		t.Run("ZeroPriority", func(t *testing.T) {
+			// 测试零优先级（最高优先级）
+			id1, _ := q.Put("test-priority", []byte("high"), 0, 0, 30*time.Second)
+			id2, _ := q.Put("test-priority", []byte("low"), 100, 0, 30*time.Second)
+
+			// 应该先获取优先级为 0 的任务
+			job, err := q.Reserve([]string{"test-priority"}, 1*time.Second)
+			if err != nil {
+				t.Fatalf("Reserve failed: %v", err)
+			}
+
+			if job.Meta.ID != id1 {
+				t.Errorf("Got job %d, want %d (zero priority should be highest)", job.Meta.ID, id1)
+			}
+
+			_ = q.Delete(id1)
+			_ = q.Delete(id2)
+		})
+
+		t.Run("MaxPriority", func(t *testing.T) {
+			// 测试最大优先级
+			maxPriority := uint32(math.MaxUint32)
+			id, err := q.Put("test-max-priority", []byte("body"), maxPriority, 0, 30*time.Second)
+			if err != nil {
+				t.Fatalf("Put with max priority failed: %v", err)
+			}
+
+			job, err := q.Reserve([]string{"test-max-priority"}, 1*time.Second)
+			if err != nil {
+				t.Fatalf("Reserve failed: %v", err)
+			}
+
+			if job.Meta.Priority != maxPriority {
+				t.Errorf("Priority = %d, want %d", job.Meta.Priority, maxPriority)
+			}
+
+			_ = q.Delete(id)
+		})
+
+		t.Run("VeryLongDelay", func(t *testing.T) {
+			// 测试非常长的延迟（1年）
+			longDelay := 365 * 24 * time.Hour
+			id, err := q.Put("test-long-delay", []byte("body"), 1, longDelay, 30*time.Second)
+			if err != nil {
+				t.Fatalf("Put with long delay failed: %v", err)
+			}
+
+			// 应该立即超时（因为任务在 delayed 队列）
+			_, err = q.Reserve([]string{"test-long-delay"}, 100*time.Millisecond)
+			if err != ErrTimeout {
+				t.Errorf("Reserve with delayed job = %v, want ErrTimeout", err)
+			}
+
+			// 检查任务状态
+			meta, err := q.StatsJob(id)
+			if err != nil {
+				t.Fatalf("StatsJob failed: %v", err)
+			}
+
+			if meta.State != StateDelayed {
+				t.Errorf("State = %v, want StateDelayed", meta.State)
+			}
+
+			_ = q.Delete(id)
+		})
+
+		t.Run("NonExistentJobOperations", func(t *testing.T) {
+			// 测试对不存在的任务的各种操作
+			nonExistentID := uint64(999999999)
+
+			// Delete
+			err := q.Delete(nonExistentID)
+			if err != ErrNotFound {
+				t.Errorf("Delete non-existent = %v, want ErrNotFound", err)
+			}
+
+			// Release
+			err = q.Release(nonExistentID, 1, 0)
+			if err != ErrNotFound {
+				t.Errorf("Release non-existent = %v, want ErrNotFound", err)
+			}
+
+			// Bury
+			err = q.Bury(nonExistentID, 1)
+			if err != ErrNotFound {
+				t.Errorf("Bury non-existent = %v, want ErrNotFound", err)
+			}
+
+			// Touch
+			err = q.Touch(nonExistentID)
+			if err != ErrNotFound {
+				t.Errorf("Touch non-existent = %v, want ErrNotFound", err)
+			}
+
+			// Peek
+			_, err = q.Peek(nonExistentID)
+			if err != ErrNotFound {
+				t.Errorf("Peek non-existent = %v, want ErrNotFound", err)
+			}
+
+			// StatsJob
+			_, err = q.StatsJob(nonExistentID)
+			if err != ErrNotFound {
+				t.Errorf("StatsJob non-existent = %v, want ErrNotFound", err)
+			}
+		})
+
+		t.Run("ReserveEmptyTopicList", func(t *testing.T) {
+			// 测试空 Topic 列表
+			_, err := q.Reserve([]string{}, 100*time.Millisecond)
+			if err != ErrTopicRequired {
+				t.Errorf("Reserve with empty topic list = %v, want ErrTopicRequired", err)
+			}
+		})
+
+		t.Run("ReserveNilTopicList", func(t *testing.T) {
+			// 测试 nil Topic 列表
+			_, err := q.Reserve(nil, 100*time.Millisecond)
+			if err != ErrTopicRequired {
+				t.Errorf("Reserve with nil topic list = %v, want ErrTopicRequired", err)
+			}
+		})
+
+		t.Run("KickNonExistentTopic", func(t *testing.T) {
+			// 测试 Kick 不存在的 Topic
+			count, err := q.Kick("non-existent-topic", 10)
+			if err != nil {
+				t.Errorf("Kick non-existent topic should not error, got: %v", err)
+			}
+			if count != 0 {
+				t.Errorf("Kicked count = %d, want 0", count)
+			}
+		})
+	})
+}
+
+// TestQueue_MaxTopicsLimit 测试 MaxTopics 限制
+func TestQueue_MaxTopicsLimit(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+		config.MaxTopics = 3 // 设置较小的限制
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		// 创建 3 个 topic（达到限制）
+		for i := 1; i <= 3; i++ {
+			_, err := q.Put(string(rune('a'+i-1)), []byte("body"), 1, 0, 30*time.Second)
+			if err != nil {
+				t.Fatalf("Put topic %d failed: %v", i, err)
+			}
+		}
+
+		// 尝试创建第 4 个 topic（应该失败）
+		_, err = q.Put("d", []byte("body"), 1, 0, 30*time.Second)
+		if err != ErrMaxTopicsReached {
+			t.Errorf("Put 4th topic = %v, want ErrMaxTopicsReached", err)
+		}
+	})
+}
+
+// TestQueue_MaxJobsPerTopicLimit 测试 MaxJobsPerTopic 限制
+func TestQueue_MaxJobsPerTopicLimit(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+		config.MaxJobsPerTopic = 5 // 设置较小的限制
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		// 添加 5 个任务（达到限制）
+		for i := 1; i <= 5; i++ {
+			_, err := q.Put("test", []byte("body"), 1, 0, 30*time.Second)
+			if err != nil {
+				t.Fatalf("Put job %d failed: %v", i, err)
+			}
+		}
+
+		// 尝试添加第 6 个任务（应该失败）
+		_, err = q.Put("test", []byte("body"), 1, 0, 30*time.Second)
+		if err != ErrMaxJobsReached {
+			t.Errorf("Put 6th job = %v, want ErrMaxJobsReached", err)
 		}
 	})
 }
