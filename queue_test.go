@@ -1805,3 +1805,214 @@ func TestQueue_MaxJobsPerTopicLimit(t *testing.T) {
 		}
 	})
 }
+
+// TestQueue_StopResourceCleanup 测试队列停止时的资源清理
+func TestQueue_StopResourceCleanup(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+
+		if err := q.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		// 创建一些任务
+		_, err = q.Put("test1", []byte("body1"), 1, 0, 30*time.Second)
+		if err != nil {
+			t.Fatalf("Put failed: %v", err)
+		}
+
+		_, err = q.Put("test2", []byte("body2"), 1, 0, 30*time.Second)
+		if err != nil {
+			t.Fatalf("Put failed: %v", err)
+		}
+
+		// 启动多个 Reserve 等待
+		var wg sync.WaitGroup
+		numWaiters := 5
+		errors := make([]error, numWaiters)
+
+		for i := 0; i < numWaiters; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				_, errors[idx] = q.Reserve([]string{"test3"}, 10*time.Second)
+			}(i)
+		}
+
+		// 等待 waiters 进入等待状态
+		time.Sleep(100 * time.Millisecond)
+
+		// 停止队列
+		stopErr := q.Stop()
+		if stopErr != nil {
+			t.Errorf("Stop failed: %v", stopErr)
+		}
+
+		// 等待所有 Reserve 完成
+		wg.Wait()
+
+		// 验证所有 Reserve 都返回了错误（context cancelled）
+		for i, err := range errors {
+			if err == nil {
+				t.Errorf("waiter %d: expected error after Stop, got nil", i)
+			}
+		}
+	})
+}
+
+// TestQueue_StopWithPendingReserves 测试有挂起 Reserve 时的 Stop 行为
+func TestQueue_StopWithPendingReserves(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+
+		if err := q.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		// 启动大量 Reserve 等待
+		numWaiters := 100
+		var wg sync.WaitGroup
+		startTime := time.Now()
+
+		for i := 0; i < numWaiters; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _ = q.Reserve([]string{"nonexistent"}, 30*time.Second)
+			}()
+		}
+
+		// 等待所有 Reserve 进入等待状态
+		time.Sleep(100 * time.Millisecond)
+
+		// Stop 应该快速取消所有 Reserve
+		stopErr := q.Stop()
+		if stopErr != nil {
+			t.Fatalf("Stop failed: %v", stopErr)
+		}
+
+		wg.Wait()
+		elapsed := time.Since(startTime)
+
+		// Stop 应该在 5 秒内完成（远小于 30 秒的 Reserve timeout）
+		if elapsed > 5*time.Second {
+			t.Errorf("Stop took %v, expected < 5s (should cancel waiters quickly)", elapsed)
+		}
+
+		t.Logf("Stop with %d pending reserves completed in %v", numWaiters, elapsed)
+	})
+}
+
+// TestQueue_MultipleStopCalls 测试多次调用 Stop
+func TestQueue_MultipleStopCalls(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+
+		if err := q.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		// 第一次 Stop
+		err1 := q.Stop()
+		if err1 != nil {
+			t.Errorf("First Stop failed: %v", err1)
+		}
+
+		// 第二次 Stop（应该安全，不会 panic）
+		err2 := q.Stop()
+		if err2 != nil {
+			t.Logf("Second Stop returned error (expected): %v", err2)
+		}
+
+		// 第三次 Stop
+		err3 := q.Stop()
+		if err3 != nil {
+			t.Logf("Third Stop returned error (expected): %v", err3)
+		}
+	})
+}
+
+// TestQueue_StopDuringRecovery 测试恢复过程中的 Stop
+func TestQueue_StopDuringRecovery(t *testing.T) {
+	// 创建临时 SQLite 数据库并添加大量任务
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// 先创建一些任务
+	storage1, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage failed: %v", err)
+	}
+
+	config1 := DefaultConfig()
+	config1.Storage = storage1
+	config1.Ticker = NewNoOpTicker()
+
+	q1, err := New(config1)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	if err := q1.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// 创建一些任务
+	for i := 0; i < 100; i++ {
+		_, err := q1.Put("test", []byte("body"), 1, 0, 30*time.Second)
+		if err != nil {
+			t.Fatalf("Put failed: %v", err)
+		}
+	}
+
+	_ = q1.Stop()
+	_ = storage1.Close()
+
+	// 重新打开并在恢复过程中停止
+	storage2, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage failed: %v", err)
+	}
+	defer func() { _ = storage2.Close() }()
+
+	config2 := DefaultConfig()
+	config2.Storage = storage2
+	config2.Ticker = NewNoOpTicker()
+
+	q2, err := New(config2)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	// 启动（会触发恢复）
+	if err := q2.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// 立即停止（恢复可能还在进行中）
+	stopErr := q2.Stop()
+	if stopErr != nil {
+		t.Errorf("Stop during recovery failed: %v", stopErr)
+	}
+}

@@ -501,3 +501,229 @@ func TestReserveContextCancellation(t *testing.T) {
 		}
 	})
 }
+
+// TestReserve_ZeroTimeout 测试零超时的 Reserve
+func TestReserve_ZeroTimeout(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		// 没有任务时，零超时应该立即返回 ErrTimeout
+		start := time.Now()
+		_, err = q.Reserve([]string{"test"}, 0)
+		elapsed := time.Since(start)
+
+		if err != ErrTimeout {
+			t.Errorf("Reserve with zero timeout = %v, want ErrTimeout", err)
+		}
+
+		if elapsed > 100*time.Millisecond {
+			t.Errorf("Reserve with zero timeout took %v, should be immediate", elapsed)
+		}
+
+		// 有任务时，零超时应该立即返回任务
+		jobID, err := q.Put("test", []byte("body"), 1, 0, 30*time.Second)
+		if err != nil {
+			t.Fatalf("Put failed: %v", err)
+		}
+
+		start = time.Now()
+		job, err := q.Reserve([]string{"test"}, 0)
+		elapsed = time.Since(start)
+
+		if err != nil {
+			t.Errorf("Reserve with job available = %v, want nil", err)
+		}
+		if job == nil || job.Meta.ID != jobID {
+			t.Errorf("Reserve returned wrong job")
+		}
+		if elapsed > 100*time.Millisecond {
+			t.Errorf("Reserve with immediate job took %v, should be fast", elapsed)
+		}
+	})
+}
+
+// TestReserve_NegativeTimeout 测试负超时
+func TestReserve_NegativeTimeout(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		// 负超时应该立即返回（视为零超时）
+		start := time.Now()
+		_, err = q.Reserve([]string{"test"}, -1*time.Second)
+		elapsed := time.Since(start)
+
+		if err != ErrTimeout {
+			t.Errorf("Reserve with negative timeout = %v, want ErrTimeout", err)
+		}
+
+		if elapsed > 100*time.Millisecond {
+			t.Errorf("Reserve with negative timeout took %v, should be immediate", elapsed)
+		}
+	})
+}
+
+// TestReserve_VeryLongTimeout 测试非常长的超时
+func TestReserve_VeryLongTimeout(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		// 启动一个非常长超时的 Reserve
+		var wg sync.WaitGroup
+		var reserveErr error
+		var job *Job
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			job, reserveErr = q.Reserve([]string{"test"}, 24*time.Hour)
+		}()
+
+		// 等待进入等待状态
+		time.Sleep(100 * time.Millisecond)
+
+		// 添加任务应该立即唤醒等待
+		start := time.Now()
+		jobID, err := q.Put("test", []byte("body"), 1, 0, 30*time.Second)
+		if err != nil {
+			t.Fatalf("Put failed: %v", err)
+		}
+
+		wg.Wait()
+		elapsed := time.Since(start)
+
+		// 应该快速返回（不需要等待 24 小时）
+		if reserveErr != nil {
+			t.Errorf("Reserve failed: %v", reserveErr)
+		}
+		if job == nil || job.Meta.ID != jobID {
+			t.Error("Reserve returned wrong job")
+		}
+		if elapsed > 1*time.Second {
+			t.Errorf("Reserve took %v to wake up, should be immediate", elapsed)
+		}
+	})
+}
+
+// TestReserve_ConcurrentTimeouts 测试并发的超时情况
+func TestReserve_ConcurrentTimeouts(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		// 启动多个不同超时时间的 Reserve
+		var wg sync.WaitGroup
+		timeouts := []time.Duration{
+			100 * time.Millisecond,
+			200 * time.Millisecond,
+			300 * time.Millisecond,
+			400 * time.Millisecond,
+			500 * time.Millisecond,
+		}
+
+		errors := make([]error, len(timeouts))
+		start := time.Now()
+
+		for i, timeout := range timeouts {
+			wg.Add(1)
+			go func(idx int, to time.Duration) {
+				defer wg.Done()
+				_, errors[idx] = q.Reserve([]string{"nonexistent"}, to)
+			}(i, timeout)
+		}
+
+		wg.Wait()
+		totalElapsed := time.Since(start)
+
+		// 所有 Reserve 都应该超时
+		for i, err := range errors {
+			if err != ErrTimeout {
+				t.Errorf("Reserve %d with timeout %v = %v, want ErrTimeout", i, timeouts[i], err)
+			}
+		}
+
+		// 总时间应该接近最长的超时（不是所有超时之和）
+		if totalElapsed > 700*time.Millisecond {
+			t.Errorf("Concurrent reserves took %v, expected ~500ms (longest timeout)", totalElapsed)
+		}
+
+		t.Logf("Concurrent timeouts completed in %v", totalElapsed)
+	})
+}
+
+// TestReserve_EmptyTopicList 测试空 topic 列表
+func TestReserve_EmptyTopicList(t *testing.T) {
+	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
+		config := DefaultConfig()
+		config.Storage = testStorage.Storage
+		config.Ticker = NewNoOpTicker()
+
+		q, err := New(config)
+		if err != nil {
+			t.Fatalf("New failed: %v", err)
+		}
+		defer func() { _ = q.Stop() }()
+
+		if err := q.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		// 空 topic 列表应该返回错误
+		_, err = q.Reserve([]string{}, 1*time.Second)
+		if err == nil {
+			t.Error("Reserve with empty topic list should fail")
+		}
+
+		// nil topic 列表应该返回错误
+		_, err = q.Reserve(nil, 1*time.Second)
+		if err == nil {
+			t.Error("Reserve with nil topic list should fail")
+		}
+	})
+}

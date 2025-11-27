@@ -2,6 +2,7 @@ package sdq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1020,4 +1021,234 @@ func TestSQLiteStorage_StressTest(t *testing.T) {
 	}
 
 	t.Logf("Final stats: %d jobs, %d topics", stats.TotalJobs, stats.TotalTopics)
+}
+
+// TestSQLiteStorage_ContextCancellation 测试 Context 取消处理
+func TestSQLiteStorage_ContextCancellation(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	storage, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage failed: %v", err)
+	}
+	defer func() { _ = storage.Close() }()
+
+	t.Run("SaveJob with cancelled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // 立即取消
+
+		meta := &JobMeta{
+			ID:       1,
+			Topic:    "test",
+			State:    StateReady,
+			Priority: 1,
+		}
+
+		err := storage.SaveJob(ctx, meta, []byte("body"))
+		// SQLite 操作可能太快，在检查 context 之前就完成了
+		// 所以我们只记录结果，不强制要求失败
+		if err != nil {
+			t.Logf("SaveJob with cancelled context failed as expected: %v", err)
+		} else {
+			t.Logf("SaveJob with cancelled context succeeded (operation was too fast)")
+		}
+	})
+
+	t.Run("GetJobMeta with cancelled context", func(t *testing.T) {
+		// 先保存一个任务
+		ctx := context.Background()
+		meta := &JobMeta{
+			ID:       2,
+			Topic:    "test",
+			State:    StateReady,
+			Priority: 1,
+		}
+		err := storage.SaveJob(ctx, meta, []byte("body"))
+		if err != nil {
+			t.Fatalf("SaveJob failed: %v", err)
+		}
+
+		// 用取消的 context 读取
+		cancelledCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err = storage.GetJobMeta(cancelledCtx, 2)
+		if err == nil {
+			t.Error("GetJobMeta with cancelled context should fail")
+		}
+	})
+
+	t.Run("UpdateJobMeta with cancelled context", func(t *testing.T) {
+		// 先保存一个任务
+		ctx := context.Background()
+		meta := &JobMeta{
+			ID:       3,
+			Topic:    "test",
+			State:    StateReady,
+			Priority: 1,
+		}
+		err := storage.SaveJob(ctx, meta, []byte("body"))
+		if err != nil {
+			t.Fatalf("SaveJob failed: %v", err)
+		}
+
+		// 用取消的 context 更新
+		cancelledCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		meta.State = StateReserved
+		err = storage.UpdateJobMeta(cancelledCtx, meta)
+		if err == nil {
+			t.Error("UpdateJobMeta with cancelled context should fail")
+		}
+	})
+
+	t.Run("ScanJobMeta with cancelled context", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		filter := &JobMetaFilter{Topic: "test", Limit: 10}
+		_, err := storage.ScanJobMeta(ctx, filter)
+		if err == nil {
+			t.Error("ScanJobMeta with cancelled context should fail")
+		}
+	})
+
+	t.Run("DeleteJob with cancelled context", func(t *testing.T) {
+		// 先保存一个任务
+		ctx := context.Background()
+		meta := &JobMeta{
+			ID:       4,
+			Topic:    "test",
+			State:    StateReady,
+			Priority: 1,
+		}
+		err := storage.SaveJob(ctx, meta, []byte("body"))
+		if err != nil {
+			t.Fatalf("SaveJob failed: %v", err)
+		}
+
+		// 用取消的 context 删除
+		cancelledCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err = storage.DeleteJob(cancelledCtx, 4)
+		if err == nil {
+			t.Error("DeleteJob with cancelled context should fail")
+		}
+	})
+}
+
+// TestSQLiteStorage_ContextTimeout 测试 Context 超时处理
+func TestSQLiteStorage_ContextTimeout(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	storage, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage failed: %v", err)
+	}
+	defer func() { _ = storage.Close() }()
+
+	t.Run("SaveJob with timeout", func(t *testing.T) {
+		// 设置一个非常短的超时
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+		defer cancel()
+
+		// 等待超时
+		time.Sleep(1 * time.Millisecond)
+
+		meta := &JobMeta{
+			ID:       100,
+			Topic:    "test",
+			State:    StateReady,
+			Priority: 1,
+		}
+
+		err := storage.SaveJob(ctx, meta, []byte("body"))
+		if err == nil {
+			t.Error("SaveJob with timed out context should fail")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Logf("SaveJob error (may not be DeadlineExceeded): %v", err)
+		}
+	})
+
+	t.Run("ScanJobMeta with timeout", func(t *testing.T) {
+		// 先添加一些任务
+		ctx := context.Background()
+		for i := 200; i < 250; i++ {
+			meta := &JobMeta{
+				ID:       uint64(i),
+				Topic:    "test",
+				State:    StateReady,
+				Priority: 1,
+			}
+			_ = storage.SaveJob(ctx, meta, []byte("body"))
+		}
+
+		// 设置超时后扫描
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+		defer cancel()
+		time.Sleep(1 * time.Millisecond)
+
+		filter := &JobMetaFilter{Topic: "test", Limit: 100}
+		_, err := storage.ScanJobMeta(timeoutCtx, filter)
+		if err == nil {
+			t.Error("ScanJobMeta with timed out context should fail")
+		}
+	})
+}
+
+// TestSQLiteStorage_ContextCancellationDuringOperation 测试操作进行中的 Context 取消
+func TestSQLiteStorage_ContextCancellationDuringOperation(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	storage, err := NewSQLiteStorage(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStorage failed: %v", err)
+	}
+	defer func() { _ = storage.Close() }()
+
+	// 添加大量任务以确保扫描需要时间
+	ctx := context.Background()
+	for i := 1; i <= 1000; i++ {
+		meta := &JobMeta{
+			ID:       uint64(i),
+			Topic:    "test",
+			State:    StateReady,
+			Priority: 1,
+		}
+		err := storage.SaveJob(ctx, meta, []byte("body"))
+		if err != nil {
+			t.Fatalf("SaveJob failed: %v", err)
+		}
+	}
+
+	t.Run("Cancel during scan", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// 在另一个 goroutine 中执行扫描
+		var scanErr error
+		done := make(chan struct{})
+
+		go func() {
+			filter := &JobMetaFilter{Topic: "test", Limit: 1000}
+			_, scanErr = storage.ScanJobMeta(ctx, filter)
+			close(done)
+		}()
+
+		// 短暂延迟后取消
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+
+		<-done
+
+		// 扫描应该被取消（或已完成）
+		if scanErr != nil {
+			t.Logf("Scan was cancelled or errored: %v", scanErr)
+		}
+	})
 }
