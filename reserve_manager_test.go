@@ -519,37 +519,28 @@ func TestReserve_ZeroTimeout(t *testing.T) {
 			t.Fatalf("Start failed: %v", err)
 		}
 
-		// 没有任务时，零超时应该立即返回 ErrTimeout
+		// 零超时应该返回 ErrInvalidTimeout
 		start := time.Now()
 		_, err = q.Reserve([]string{"test"}, 0)
 		elapsed := time.Since(start)
 
-		if err != ErrTimeout {
-			t.Errorf("Reserve with zero timeout = %v, want ErrTimeout", err)
+		if err != ErrInvalidTimeout {
+			t.Errorf("Reserve with zero timeout = %v, want ErrInvalidTimeout", err)
 		}
 
 		if elapsed > 100*time.Millisecond {
 			t.Errorf("Reserve with zero timeout took %v, should be immediate", elapsed)
 		}
 
-		// 有任务时，零超时应该立即返回任务
-		jobID, err := q.Put("test", []byte("body"), 1, 0, 30*time.Second)
+		// 即使有任务，零超时也应该返回 ErrInvalidTimeout
+		_, err = q.Put("test", []byte("body"), 1, 0, 30*time.Second)
 		if err != nil {
 			t.Fatalf("Put failed: %v", err)
 		}
 
-		start = time.Now()
-		job, err := q.Reserve([]string{"test"}, 0)
-		elapsed = time.Since(start)
-
-		if err != nil {
-			t.Errorf("Reserve with job available = %v, want nil", err)
-		}
-		if job == nil || job.Meta.ID != jobID {
-			t.Errorf("Reserve returned wrong job")
-		}
-		if elapsed > 100*time.Millisecond {
-			t.Errorf("Reserve with immediate job took %v, should be fast", elapsed)
+		_, err = q.Reserve([]string{"test"}, 0)
+		if err != ErrInvalidTimeout {
+			t.Errorf("Reserve with zero timeout (job available) = %v, want ErrInvalidTimeout", err)
 		}
 	})
 }
@@ -571,13 +562,13 @@ func TestReserve_NegativeTimeout(t *testing.T) {
 			t.Fatalf("Start failed: %v", err)
 		}
 
-		// 负超时应该立即返回（视为零超时）
+		// 负超时应该返回 ErrInvalidTimeout
 		start := time.Now()
 		_, err = q.Reserve([]string{"test"}, -1*time.Second)
 		elapsed := time.Since(start)
 
-		if err != ErrTimeout {
-			t.Errorf("Reserve with negative timeout = %v, want ErrTimeout", err)
+		if err != ErrInvalidTimeout {
+			t.Errorf("Reserve with negative timeout = %v, want ErrInvalidTimeout", err)
 		}
 
 		if elapsed > 100*time.Millisecond {
@@ -608,11 +599,9 @@ func TestReserve_VeryLongTimeout(t *testing.T) {
 		var reserveErr error
 		var job *Job
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			job, reserveErr = q.Reserve([]string{"test"}, 24*time.Hour)
-		}()
+		})
 
 		// 等待进入等待状态
 		time.Sleep(100 * time.Millisecond)

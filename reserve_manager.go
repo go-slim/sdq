@@ -79,22 +79,22 @@ func (rm *reserveManager) stop() {
 
 // Reserve 从指定 topics 保留一个任务
 // topics: topic 名称列表
-// timeout: 等待超时时间，0 表示立即返回
+// timeout: 等待超时时间，必须大于 0
 // handler: 处理 Reserve 操作的接口
 func (rm *reserveManager) Reserve(
 	topics []string,
 	timeout time.Duration,
 	handler ReserveHandler,
 ) (*Job, error) {
-	// 1. 先尝试立即获取（快速路径）
+	// 1. timeout 必须大于 0
+	if timeout <= 0 {
+		return nil, ErrInvalidTimeout
+	}
+
+	// 2. 先尝试立即获取（快速路径）
 	meta := handler.TryReserve(topics)
 	if meta != nil {
 		return NewJobWithStorage(meta, handler.GetStorage(), handler.GetQueue()), nil
-	}
-
-	// 2. 非阻塞模式，立即返回
-	if timeout == 0 {
-		return nil, ErrTimeout
 	}
 
 	// 3. 没有任务，注册到等待队列
@@ -102,10 +102,7 @@ func (rm *reserveManager) Reserve(
 		topics:   topics,
 		resultCh: make(chan *Job, 1),
 		cancelCh: make(chan struct{}),
-	}
-
-	if timeout > 0 {
-		waiter.deadline = time.Now().Add(timeout)
+		deadline: time.Now().Add(timeout),
 	}
 
 	// 注册 waiter（可能失败）
@@ -114,28 +111,21 @@ func (rm *reserveManager) Reserve(
 	}
 
 	// 4. 等待结果或超时
-	var timer *time.Timer
-	if timeout > 0 {
-		timer = time.NewTimer(timeout)
-		defer timer.Stop()
-	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
 	select {
 	case job := <-waiter.resultCh:
-		// 成功获取任务
 		return job, nil
 
 	case <-waiter.cancelCh:
-		// 被取消
 		return nil, ErrTimeout
 
 	case <-timer.C:
-		// 超时
 		rm.removeWaiter(waiter)
 		return nil, ErrTimeout
 
 	case <-rm.ctx.Done():
-		// 管理器关闭
 		rm.removeWaiter(waiter)
 		return nil, rm.ctx.Err()
 	}

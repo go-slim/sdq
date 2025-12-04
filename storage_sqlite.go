@@ -98,6 +98,13 @@ func NewSQLiteStorage(dbPath string, opts ...SQLiteStorageOption) (*SQLiteStorag
 		return nil, fmt.Errorf("init tables: %w", err)
 	}
 
+	// 启用外键约束（SQLite 默认不启用）
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		_ = db.Close()
+		cancel()
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	}
+
 	// 启用 WAL 模式（Write-Ahead Logging）
 	// WAL 模式允许读写并发，显著提升并发性能
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
@@ -489,7 +496,7 @@ func (s *SQLiteStorage) DeleteJob(ctx context.Context, id uint64) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// 删除元数据（CASCADE 会自动删除 body）
+	// 删除元数据
 	result, err := tx.ExecContext(ctx, "DELETE FROM job_meta WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("delete job_meta: %w", err)
@@ -501,6 +508,11 @@ func (s *SQLiteStorage) DeleteJob(ctx context.Context, id uint64) error {
 	}
 	if rowsAffected == 0 {
 		return ErrNotFound
+	}
+
+	// 显式删除 body（兼容外键约束未生效的情况）
+	if _, err := tx.ExecContext(ctx, "DELETE FROM job_body WHERE id = ?", id); err != nil {
+		return fmt.Errorf("delete job_body: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

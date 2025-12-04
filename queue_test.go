@@ -399,7 +399,7 @@ func TestTouch_MaxTouches(t *testing.T) {
 		}
 
 		// Touch 3 次应该成功
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			err = q.Touch(job.Meta.ID)
 			if err != nil {
 				t.Errorf("Touch %d failed: %v", i+1, err)
@@ -1412,7 +1412,7 @@ func TestReserve_TTRTimeout_Multiple(t *testing.T) {
 
 		// 发布多个任务
 		const numJobs = 5
-		for i := 0; i < numJobs; i++ {
+		for range numJobs {
 			_, err := q.Put("test", []byte("timeout"), 1, 0, 100*time.Millisecond)
 			if err != nil {
 				t.Fatalf("Put failed: %v", err)
@@ -1421,7 +1421,7 @@ func TestReserve_TTRTimeout_Multiple(t *testing.T) {
 
 		// Reserve 所有任务但不处理
 		jobs := make([]*Job, numJobs)
-		for i := 0; i < numJobs; i++ {
+		for i := range numJobs {
 			job, err := q.Reserve([]string{"test"}, 1*time.Second)
 			if err != nil {
 				t.Fatalf("Reserve %d failed: %v", i, err)
@@ -1448,7 +1448,7 @@ func TestReserve_TTRTimeout_Multiple(t *testing.T) {
 		}
 
 		// 验证可以重新获取所有任务
-		for i := 0; i < numJobs; i++ {
+		for i := range numJobs {
 			job, err := q.Reserve([]string{"test"}, 1*time.Second)
 			if err != nil {
 				t.Fatalf("Second Reserve %d failed: %v", i, err)
@@ -1838,7 +1838,7 @@ func TestQueue_StopResourceCleanup(t *testing.T) {
 		numWaiters := 5
 		errors := make([]error, numWaiters)
 
-		for i := 0; i < numWaiters; i++ {
+		for i := range numWaiters {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
@@ -1888,12 +1888,10 @@ func TestQueue_StopWithPendingReserves(t *testing.T) {
 		var wg sync.WaitGroup
 		startTime := time.Now()
 
-		for i := 0; i < numWaiters; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		for range numWaiters {
+			wg.Go(func() {
 				_, _ = q.Reserve([]string{"nonexistent"}, 30*time.Second)
-			}()
+			})
 		}
 
 		// 等待所有 Reserve 进入等待状态
@@ -1979,7 +1977,7 @@ func TestQueue_StopDuringRecovery(t *testing.T) {
 	}
 
 	// 创建一些任务
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		_, err := q1.Put("test", []byte("body"), 1, 0, 30*time.Second)
 		if err != nil {
 			t.Fatalf("Put failed: %v", err)

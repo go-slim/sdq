@@ -309,10 +309,10 @@ func TestDynamicSleepTicker_ConcurrentRegisterUnregister(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < operationsPerGoroutine; j++ {
+			for j := range operationsPerGoroutine {
 				name := fmt.Sprintf("obj-%d-%d", id, j)
 				mock := newMockTickable(time.Now().Add(50 * time.Millisecond))
 				ticker.Register(name, mock)
@@ -336,7 +336,7 @@ func TestDynamicSleepTicker_ConcurrentProcessTickAndWakeup(t *testing.T) {
 
 	// Register multiple objects
 	const numObjects = 20
-	for i := 0; i < numObjects; i++ {
+	for i := range numObjects {
 		name := fmt.Sprintf("obj-%d", i)
 		mock := newMockTickable(time.Now().Add(30 * time.Millisecond))
 		ticker.Register(name, mock)
@@ -350,7 +350,7 @@ func TestDynamicSleepTicker_ConcurrentProcessTickAndWakeup(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numWakeups)
 
-	for i := 0; i < numWakeups; i++ {
+	for range numWakeups {
 		go func() {
 			defer wg.Done()
 			ticker.Wakeup()
@@ -381,9 +381,7 @@ func TestDynamicSleepTicker_ConcurrentOperations(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Concurrent registrations
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		counter := 0
 		for time.Now().Before(stopTime) {
 			name := fmt.Sprintf("reg-%d", counter)
@@ -392,12 +390,10 @@ func TestDynamicSleepTicker_ConcurrentOperations(t *testing.T) {
 			counter++
 			time.Sleep(5 * time.Millisecond)
 		}
-	}()
+	})
 
 	// Concurrent unregistrations
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		counter := 0
 		for time.Now().Before(stopTime) {
 			name := fmt.Sprintf("reg-%d", counter)
@@ -405,27 +401,23 @@ func TestDynamicSleepTicker_ConcurrentOperations(t *testing.T) {
 			counter++
 			time.Sleep(7 * time.Millisecond)
 		}
-	}()
+	})
 
 	// Concurrent stats queries
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for time.Now().Before(stopTime) {
 			_ = ticker.Stats()
 			time.Sleep(10 * time.Millisecond)
 		}
-	}()
+	})
 
 	// Concurrent wakeups
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for time.Now().Before(stopTime) {
 			ticker.Wakeup()
 			time.Sleep(15 * time.Millisecond)
 		}
-	}()
+	})
 
 	wg.Wait()
 
@@ -472,7 +464,7 @@ func TestDynamicSleepTicker_MultiplePanics(t *testing.T) {
 	// 创建多个会 panic 的任务
 	numPanicTasks := 5
 	panicTasks := make([]*panicTickable, numPanicTasks)
-	for i := 0; i < numPanicTasks; i++ {
+	for i := range numPanicTasks {
 		panicTasks[i] = newPanicTickable(time.Now().Add(60*time.Millisecond), true, fmt.Sprintf("panic %d", i))
 		ticker.Register(fmt.Sprintf("panic-task-%d", i), panicTasks[i])
 	}

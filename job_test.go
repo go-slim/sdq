@@ -645,8 +645,8 @@ func TestJob_ConcurrentOperations(t *testing.T) {
 		// 创建多个任务
 		const numJobs = 10
 		jobIDs := make([]uint64, numJobs)
-		for i := 0; i < numJobs; i++ {
-			id, err := q.Put("concurrent-ops", []byte(fmt.Sprintf("job-%d", i)), 1, 0, 5*time.Second)
+		for i := range numJobs {
+			id, err := q.Put("concurrent-ops", fmt.Appendf(nil, "job-%d", i), 1, 0, 5*time.Second)
 			if err != nil {
 				t.Fatalf("Put failed: %v", err)
 			}
@@ -657,11 +657,11 @@ func TestJob_ConcurrentOperations(t *testing.T) {
 		const numWorkers = 20
 
 		// 多个 worker 并发操作这些任务
-		for i := 0; i < numWorkers; i++ {
+		for i := range numWorkers {
 			wg.Add(1)
 			go func(workerID int) {
 				defer wg.Done()
-				for j := 0; j < 5; j++ {
+				for range 5 {
 					// Reserve
 					job, err := q.Reserve([]string{"concurrent-ops"}, 100*time.Millisecond)
 					if err != nil {
@@ -730,7 +730,7 @@ func TestJob_ConcurrentTouch(t *testing.T) {
 		successCount := make([]int, numGoroutines)
 
 		// 多个 goroutine 同时 Touch 同一个任务
-		for i := 0; i < numGoroutines; i++ {
+		for i := range numGoroutines {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()

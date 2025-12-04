@@ -788,11 +788,11 @@ func TestTopicHub_ConcurrentCreate(t *testing.T) {
 		successCount := make([]int, numGoroutines)
 
 		// 100 个 goroutine 同时尝试在同一个 topic 中创建任务
-		for i := 0; i < numGoroutines; i++ {
+		for i := range numGoroutines {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
-				id, err := q.Put(sameTopic, []byte(fmt.Sprintf("job-%d", idx)), 1, 0, 30*time.Second)
+				id, err := q.Put(sameTopic, fmt.Appendf(nil, "job-%d", idx), 1, 0, 30*time.Second)
 				if err == nil && id != 0 {
 					successCount[idx] = 1
 				}
@@ -843,19 +843,24 @@ func TestTopicHub_ConcurrentOperations(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		// 等待 recovery 完成，避免与并发 Put 产生竞态
+		if err := q.WaitForRecovery(5 * time.Second); err != nil {
+			t.Fatalf("WaitForRecovery failed: %v", err)
+		}
+
 		const numTopics = 10
 		const jobsPerTopic = 50
 
 		var wg sync.WaitGroup
 
 		// 并发创建多个 topics 和 jobs
-		for i := 0; i < numTopics; i++ {
+		for i := range numTopics {
 			topic := fmt.Sprintf("topic-%d", i)
-			for j := 0; j < jobsPerTopic; j++ {
+			for j := range jobsPerTopic {
 				wg.Add(1)
 				go func(t string, idx int) {
 					defer wg.Done()
-					_, _ = q.Put(t, []byte(fmt.Sprintf("job-%d", idx)), uint32(idx%10), 0, 30*time.Second)
+					_, _ = q.Put(t, fmt.Appendf(nil, "job-%d", idx), uint32(idx%10), 0, 30*time.Second)
 				}(topic, j)
 			}
 		}
@@ -921,7 +926,7 @@ func TestTopicHub_ConcurrentReadWrite(t *testing.T) {
 		}
 
 		// Reader goroutines
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			wg.Add(1)
 			go func(id int) {
 				defer wg.Done()
@@ -949,13 +954,13 @@ func TestTopicHub_ConcurrentReadWrite(t *testing.T) {
 
 		// 统计总数
 		totalPut := 0
-		putCount.Range(func(_, value interface{}) bool {
+		putCount.Range(func(_, value any) bool {
 			totalPut += value.(int)
 			return true
 		})
 
 		totalReserve := 0
-		reserveCount.Range(func(_, value interface{}) bool {
+		reserveCount.Range(func(_, value any) bool {
 			totalReserve += value.(int)
 			return true
 		})

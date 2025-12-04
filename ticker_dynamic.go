@@ -117,10 +117,11 @@ func (w *DynamicSleepTicker) wakeup() {
 
 // Stats 返回统计信息
 func (w *DynamicSleepTicker) Stats() *TickerStats {
+	// 先计算下一个时间（内部会获取锁）
+	nextTime, hasNext := w.calculateNextTime()
+
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-
-	nextTime, hasNext := w.calculateNextTime()
 
 	stats := &TickerStats{
 		RegisteredCount: len(w.registry),

@@ -37,6 +37,8 @@ var (
 	ErrInvalidTouchTime = errors.New("sdq: invalid touch time")
 	// ErrTooManyWaiters 等待队列已满
 	ErrTooManyWaiters = errors.New("sdq: too many waiters")
+	// ErrInvalidTimeout timeout 必须大于 0
+	ErrInvalidTimeout = errors.New("sdq: timeout must be greater than 0")
 )
 
 // Queue 延迟队列
