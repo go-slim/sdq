@@ -43,8 +43,7 @@ func BenchmarkTimeWheelTicker_Register(b *testing.B) {
 	ticker.Start()
 	defer ticker.Stop()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		name := fmt.Sprintf("obj-%d", i)
 		mock := newMockTickable(time.Now().Add(100 * time.Millisecond))
 		ticker.Register(name, mock)
@@ -78,14 +77,13 @@ func BenchmarkTimeWheelTicker_Wakeup(b *testing.B) {
 	defer ticker.Stop()
 
 	// 注册一些对象
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		name := fmt.Sprintf("obj-%d", i)
 		mock := newMockTickable(time.Now().Add(100 * time.Millisecond))
 		ticker.Register(name, mock)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		ticker.Wakeup()
 	}
 }
@@ -97,14 +95,13 @@ func BenchmarkTimeWheelTicker_Stats(b *testing.B) {
 	defer ticker.Stop()
 
 	// 注册一些对象
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		name := fmt.Sprintf("obj-%d", i)
 		mock := newMockTickable(time.Now().Add(100 * time.Millisecond))
 		ticker.Register(name, mock)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = ticker.Stats()
 	}
 }
@@ -115,8 +112,7 @@ func BenchmarkDynamicSleepTicker_Register(b *testing.B) {
 	ticker.Start()
 	defer ticker.Stop()
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		name := fmt.Sprintf("obj-%d", i)
 		mock := newMockTickable(time.Now().Add(100 * time.Millisecond))
 		ticker.Register(name, mock)
@@ -150,14 +146,13 @@ func BenchmarkDynamicSleepTicker_Wakeup(b *testing.B) {
 	defer ticker.Stop()
 
 	// 注册一些对象
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		name := fmt.Sprintf("obj-%d", i)
 		mock := newMockTickable(time.Now().Add(100 * time.Millisecond))
 		ticker.Register(name, mock)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		ticker.Wakeup()
 	}
 }
@@ -169,14 +164,13 @@ func BenchmarkDynamicSleepTicker_Stats(b *testing.B) {
 	defer ticker.Stop()
 
 	// 注册一些对象
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		name := fmt.Sprintf("obj-%d", i)
 		mock := newMockTickable(time.Now().Add(100 * time.Millisecond))
 		ticker.Register(name, mock)
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = ticker.Stats()
 	}
 }
@@ -192,8 +186,8 @@ func BenchmarkTicker_Comparison(b *testing.B) {
 			defer ticker.Stop()
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				for j := 0; j < count; j++ {
+			for i := 0; b.Loop(); i++ {
+				for j := range count {
 					name := fmt.Sprintf("obj-%d-%d", i, j)
 					mock := newMockTickable(time.Now().Add(100 * time.Millisecond))
 					ticker.Register(name, mock)
@@ -207,8 +201,8 @@ func BenchmarkTicker_Comparison(b *testing.B) {
 			defer ticker.Stop()
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				for j := 0; j < count; j++ {
+			for i := 0; b.Loop(); i++ {
+				for j := range count {
 					name := fmt.Sprintf("obj-%d-%d", i, j)
 					mock := newMockTickable(time.Now().Add(100 * time.Millisecond))
 					ticker.Register(name, mock)
@@ -266,14 +260,14 @@ func BenchmarkTicker_WheelSlots(b *testing.B) {
 			defer ticker.Stop()
 
 			// 注册对象
-			for i := 0; i < 100; i++ {
+			for i := range 100 {
 				name := fmt.Sprintf("obj-%d", i)
 				mock := newMockTickable(time.Now().Add(time.Duration(i*10) * time.Millisecond))
 				ticker.Register(name, mock)
 			}
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				ticker.Wakeup()
 			}
 		})

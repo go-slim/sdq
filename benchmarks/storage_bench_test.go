@@ -34,7 +34,7 @@ func BenchmarkStorage_SaveJob(b *testing.B) {
 			body := []byte("benchmark test body")
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := 0; b.Loop(); i++ {
 				meta := sdq.NewJobMeta(uint64(i+1), "bench-topic", 1, 0, 30*time.Second)
 				err := storage.SaveJob(ctx, meta, body)
 				if err != nil {
@@ -111,7 +111,7 @@ func BenchmarkStorage_GetJobMeta(b *testing.B) {
 			}
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := 0; b.Loop(); i++ {
 				id := uint64((i % numJobs) + 1)
 				_, err := storage.GetJobMeta(ctx, id)
 				if err != nil {
@@ -151,7 +151,7 @@ func BenchmarkStorage_GetJobBody(b *testing.B) {
 			}
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := 0; b.Loop(); i++ {
 				id := uint64((i % numJobs) + 1)
 				_, err := storage.GetJobBody(ctx, id)
 				if err != nil {
@@ -179,8 +179,7 @@ func BenchmarkStorage_UpdateJobMeta(b *testing.B) {
 		metas[i-1] = meta
 	}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := 0; b.Loop(); i++ {
 		meta := metas[i%numJobs]
 		meta.Reserves++
 		err := storage.UpdateJobMeta(ctx, meta)
@@ -262,7 +261,7 @@ func BenchmarkStorage_ScanJobMeta(b *testing.B) {
 			}
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				_, err := storage.ScanJobMeta(ctx, filter)
 				if err != nil {
 					b.Fatal(err)
@@ -289,7 +288,7 @@ func BenchmarkStorage_BodySize(b *testing.B) {
 
 			b.ResetTimer()
 			b.SetBytes(int64(size))
-			for i := 0; i < b.N; i++ {
+			for i := 0; b.Loop(); i++ {
 				meta := sdq.NewJobMeta(uint64(i+1), "bench-topic", 1, 0, 30*time.Second)
 				err := storage.SaveJob(ctx, meta, body)
 				if err != nil {
@@ -319,7 +318,7 @@ func BenchmarkSQLiteStorage_BatchSize(b *testing.B) {
 			body := []byte("benchmark test body")
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := 0; b.Loop(); i++ {
 				meta := sdq.NewJobMeta(uint64(i+1), "bench-topic", 1, 0, 30*time.Second)
 				err := storage.SaveJob(ctx, meta, body)
 				if err != nil {

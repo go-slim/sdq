@@ -55,7 +55,7 @@ func BenchmarkQueue_Put(b *testing.B) {
 			body := []byte("benchmark test body")
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				_, err := q.Put("bench-topic", body, 1, 0, 30*time.Second)
 				if err != nil {
 					b.Fatal(err)
@@ -185,7 +185,7 @@ func BenchmarkQueue_PutReserveDelete(b *testing.B) {
 			body := []byte("benchmark test body")
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				_, err := q.Put("bench-topic", body, 1, 0, 30*time.Second)
 				if err != nil {
 					b.Fatal(err)
@@ -230,7 +230,7 @@ func BenchmarkQueue_MultiTopic(b *testing.B) {
 			}
 
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := 0; b.Loop(); i++ {
 				topic := topics[i%numTopics]
 				_, err := q.Put(topic, body, 1, 0, 30*time.Second)
 				if err != nil {
@@ -300,7 +300,7 @@ func BenchmarkQueue_BodySize(b *testing.B) {
 
 			b.ResetTimer()
 			b.SetBytes(int64(size))
-			for i := 0; i < b.N; i++ {
+			for b.Loop() {
 				_, err := q.Put("bench-topic", body, 1, 0, 30*time.Second)
 				if err != nil {
 					b.Fatal(err)
@@ -332,21 +332,17 @@ func BenchmarkQueue_ConcurrentProducerConsumer(b *testing.B) {
 	b.ResetTimer()
 
 	// 生产者
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < b.N; i++ {
+	wg.Go(func() {
+		for b.Loop() {
 			_, err := q.Put("bench-topic", body, 1, 0, 30*time.Second)
 			if err == nil {
 				produced++
 			}
 		}
-	}()
+	})
 
 	// 消费者
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for consumed < int64(b.N) {
 			job, err := q.Reserve([]string{"bench-topic"}, 100*time.Millisecond)
 			if err == nil {
@@ -354,7 +350,7 @@ func BenchmarkQueue_ConcurrentProducerConsumer(b *testing.B) {
 				consumed++
 			}
 		}
-	}()
+	})
 
 	wg.Wait()
 }

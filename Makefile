@@ -14,9 +14,9 @@ help:
 
 
 .PHONY: test
-## test: run all tests excluding examples
+## test: run all tests excluding examples and benchmarks
 test:
-	go test -v $(go list ./... | grep -v examples/)
+	$(GO) test -v $$($(GO) list ./... | grep -v -E '(examples|benchmarks)')
 
 
 .PHONY: lint
@@ -24,3 +24,9 @@ test:
 lint:
 	@echo "Running golangci-lint with fixes..."
 	$(GO) run $(GOLANGCI) run --fix
+
+
+.PHONY: bench
+## bench: run benchmark tests
+bench:
+	$(GO) test -bench=. -benchmem ./benchmarks/
