@@ -95,32 +95,27 @@ func (h *TopicHub) UnregisterFromTicker(name string) {
 }
 
 // TryReserve 尝试从指定 topics 预留任务
+// 返回克隆的 JobMeta，避免数据竞争
 func (h *TopicHub) TryReserve(topics []string) *JobMeta {
-	var meta *JobMeta
 	var metaClone *JobMeta
 
 	h.mu.Lock()
 
+	now := time.Now()
 	for _, topicName := range topics {
 		t, ok := h.topics[topicName]
 		if !ok {
 			continue
 		}
 
-		meta = t.popReady()
+		// 使用原子操作：弹出并加入 Reserved
+		meta := t.popReadyAndAddReserved(now)
 		if meta == nil {
 			continue
 		}
 
-		// 保留任务
-		now := time.Now()
-		meta.State = StateReserved
-		meta.ReservedAt = now
-		meta.Reserves++
-
-		t.addReserved(meta)
-
-		// 克隆用于 Storage 更新（避免锁外访问）
+		// 克隆用于返回和 Storage 更新
+		// 必须在锁内克隆，避免数据竞争
 		metaClone = meta.Clone()
 
 		// 注册到 Ticker（已持有锁）
@@ -135,7 +130,7 @@ func (h *TopicHub) TryReserve(topics []string) *JobMeta {
 		_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
 	}
 
-	return meta
+	return metaClone
 }
 
 // CleanupEmptyTopics 清理空 Topic
@@ -164,20 +159,7 @@ func (h *TopicHub) CleanupEmptyTopics() int {
 // FindJob 查找任务（调用者必须持有锁）
 func (h *TopicHub) FindJob(id uint64) (*JobMeta, *topic) {
 	for _, t := range h.topics {
-		// 检查 Ready
-		if meta := t.ready.find(id); meta != nil {
-			return meta, t
-		}
-		// 检查 Delayed
-		if meta := t.delayed.find(id); meta != nil {
-			return meta, t
-		}
-		// 检查 Reserved
-		if meta := t.getReserved(id); meta != nil {
-			return meta, t
-		}
-		// 检查 Buried
-		if meta := t.buried.find(id); meta != nil {
+		if meta := t.findJob(id); meta != nil {
 			return meta, t
 		}
 	}
@@ -228,7 +210,7 @@ func (h *TopicHub) TotalJobs() int {
 
 	total := 0
 	for _, t := range h.topics {
-		total += t.ready.Len() + t.delayed.Len() + len(t.reserved) + t.buried.Len()
+		total += t.stats().TotalJobs
 	}
 	return total
 }
@@ -373,9 +355,6 @@ func (h *TopicHub) Delete(id uint64) error {
 		_ = err
 	}
 
-	// 释放 JobMeta 回对象池
-	ReleaseJobMeta(meta)
-
 	return nil
 }
 
@@ -398,37 +377,32 @@ func (h *TopicHub) Release(id uint64, priority uint32, delay time.Duration) (str
 
 	topicName := meta.Topic
 
-	// 从 Reserved 移除
-	topic.removeReserved(id)
-
-	// 更新任务
-	meta.Priority = priority
-	meta.Releases++
-	meta.ReservedAt = time.Time{}
-
+	// 使用原子操作
 	now := time.Now()
 	needsNotify := false
+	var metaClone *JobMeta
 	if delay > 0 {
-		meta.State = StateDelayed
-		meta.ReadyAt = now.Add(delay)
-		topic.pushDelayed(meta)
+		meta = topic.removeReservedAndPushDelayed(id, priority, now.Add(delay))
+		if meta != nil {
+			metaClone = meta.Clone()
+		}
 	} else {
-		meta.State = StateReady
-		meta.ReadyAt = now
-		topic.pushReady(meta)
-		needsNotify = true
+		meta = topic.removeReservedAndPushReady(id, priority, now)
+		if meta != nil {
+			metaClone = meta.Clone()
+			needsNotify = true
+		}
 	}
 
 	// 注册到 Ticker（使用 locked 版本，因为已持有锁）
 	h.registerToTickerLocked(topicName, topic)
 
-	// 克隆用于 Storage 更新（避免锁外访问）
-	metaClone := meta.Clone()
-
 	h.mu.Unlock()
 
 	// 更新到 Storage（移到锁外）
-	_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
+	if metaClone != nil {
+		_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
+	}
 
 	return topicName, needsNotify, nil
 }
@@ -451,30 +425,26 @@ func (h *TopicHub) Bury(id uint64, priority uint32) error {
 
 	topicName := meta.Topic
 
-	// 从 Reserved 移除
-	topic.removeReserved(id)
+	// 使用原子操作
+	now := time.Now()
+	meta = topic.removeReservedAndPushBuried(id, priority, now)
 
-	// 埋葬任务
-	meta.State = StateBuried
-	meta.Priority = priority
-	meta.BuriedAt = time.Now()
-	meta.Buries++
-	meta.ReservedAt = time.Time{}
-
-	topic.pushBuried(meta)
+	var metaClone *JobMeta
+	if meta != nil {
+		metaClone = meta.Clone()
+	}
 
 	// 如果 topic 不再需要 tick，取消注册
 	if !topic.NeedsTick() {
 		h.UnregisterFromTicker(topicName)
 	}
 
-	// 克隆用于 Storage 更新（避免锁外访问）
-	metaClone := meta.Clone()
-
 	h.mu.Unlock()
 
 	// 更新到 Storage（移到锁外）
-	_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
+	if metaClone != nil {
+		_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
+	}
 
 	return nil
 }
@@ -490,20 +460,15 @@ func (h *TopicHub) Kick(topicName string, bound int) (int, bool, error) {
 		return 0, false, nil
 	}
 
+	now := time.Now()
 	var metaClones []*JobMeta
 	kicked := 0
 	for range bound {
-		meta := t.popBuried()
+		// 使用原子操作
+		meta := t.popBuriedAndPushReady(now)
 		if meta == nil {
 			break
 		}
-
-		meta.State = StateReady
-		meta.BuriedAt = time.Time{}
-		meta.Kicks++
-		meta.ReadyAt = time.Now()
-
-		t.pushReady(meta)
 
 		// 克隆用于 Storage 更新
 		metaClones = append(metaClones, meta.Clone())
@@ -541,22 +506,21 @@ func (h *TopicHub) KickJob(id uint64) (string, error) {
 
 	topicName := topic.name
 
-	topic.removeBuried(id)
+	// 使用原子操作
+	now := time.Now()
+	meta = topic.removeBuriedByIdAndPushReady(id, now)
 
-	meta.State = StateReady
-	meta.BuriedAt = time.Time{}
-	meta.Kicks++
-	meta.ReadyAt = time.Now()
-
-	topic.pushReady(meta)
-
-	// 克隆用于 Storage 更新（避免锁外访问）
-	metaClone := meta.Clone()
+	var metaClone *JobMeta
+	if meta != nil {
+		metaClone = meta.Clone()
+	}
 
 	h.mu.Unlock()
 
 	// 更新到 Storage（移到锁外）
-	_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
+	if metaClone != nil {
+		_ = h.storage.UpdateJobMeta(context.Background(), metaClone)
+	}
 
 	return topicName, nil
 }

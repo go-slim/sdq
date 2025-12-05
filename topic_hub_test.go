@@ -781,6 +781,17 @@ func TestTopicHub_ConcurrentCreate(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		// 等待恢复完成，确保测试隔离
+		if err := q.WaitForRecovery(5 * time.Second); err != nil {
+			t.Fatalf("WaitForRecovery failed: %v", err)
+		}
+
+		// 检查初始状态是否为空（确保测试隔离）
+		initialStats := q.Stats()
+		if initialStats.TotalJobs != 0 {
+			t.Fatalf("初始状态不为空: TotalJobs=%d, 可能是测试隔离问题", initialStats.TotalJobs)
+		}
+
 		const numGoroutines = 100
 		const sameTopic = "concurrent-topic"
 

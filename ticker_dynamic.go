@@ -9,9 +9,46 @@ import (
 
 // cachedTickable 缓存 Tickable 的下次 Tick 时间
 type cachedTickable struct {
+	mu       sync.RWMutex
 	tickable Tickable
 	nextTime time.Time
 	dirty    bool // 是否需要重新计算
+}
+
+// markDirty 标记为需要重新计算
+func (ct *cachedTickable) markDirty() {
+	ct.mu.Lock()
+	ct.dirty = true
+	ct.mu.Unlock()
+}
+
+// getNextTime 获取下次 tick 时间，如果 dirty 则重新计算
+func (ct *cachedTickable) getNextTime() time.Time {
+	ct.mu.RLock()
+	dirty := ct.dirty
+	nextTime := ct.nextTime
+	ct.mu.RUnlock()
+
+	if dirty {
+		// 需要重新计算，先调用 tickable（可能获取其他锁）
+		newNextTime := ct.tickable.NextTickTime()
+
+		ct.mu.Lock()
+		ct.nextTime = newNextTime
+		ct.dirty = false
+		ct.mu.Unlock()
+
+		return newNextTime
+	}
+
+	return nextTime
+}
+
+// setNextTimeAndMarkDirty 处理完 tick 后更新状态
+func (ct *cachedTickable) setNextTimeAndMarkDirty() {
+	ct.mu.Lock()
+	ct.dirty = true
+	ct.mu.Unlock()
 }
 
 // DynamicSleepTicker 动态 Sleep 模式的定时器
@@ -98,11 +135,16 @@ func (w *DynamicSleepTicker) Unregister(name string) {
 // Wakeup 唤醒定时器（公开方法）
 func (w *DynamicSleepTicker) Wakeup() {
 	// 标记所有缓存为 dirty，强制重新计算
-	w.mu.Lock()
+	w.mu.RLock()
+	cached := make([]*cachedTickable, 0, len(w.registry))
 	for _, ct := range w.registry {
-		ct.dirty = true
+		cached = append(cached, ct)
 	}
-	w.mu.Unlock()
+	w.mu.RUnlock()
+
+	for _, ct := range cached {
+		ct.markDirty()
+	}
 
 	w.wakeup()
 }
@@ -201,13 +243,7 @@ func (w *DynamicSleepTicker) calculateNextTime() (time.Time, bool) {
 	hasNext := false
 
 	for _, ct := range cached {
-		// 只在 dirty 时重新计算
-		if ct.dirty {
-			ct.nextTime = ct.tickable.NextTickTime()
-			ct.dirty = false
-		}
-
-		t := ct.nextTime
+		t := ct.getNextTime()
 		if t.IsZero() {
 			continue
 		}
@@ -235,14 +271,10 @@ func (w *DynamicSleepTicker) processTick() {
 
 	// 通知各个对象处理（只处理到期的）
 	for _, ct := range cached {
-		// 如果是 dirty，重新获取时间
-		if ct.dirty {
-			ct.nextTime = ct.tickable.NextTickTime()
-			ct.dirty = false
-		}
+		nextTime := ct.getNextTime()
 
 		// 检查是否需要 tick
-		if ct.nextTime.IsZero() || now.Before(ct.nextTime) {
+		if nextTime.IsZero() || now.Before(nextTime) {
 			continue
 		}
 
@@ -259,6 +291,6 @@ func (w *DynamicSleepTicker) processTick() {
 		}()
 
 		// 标记为 dirty，下次需要重新计算
-		ct.dirty = true
+		ct.setNextTimeAndMarkDirty()
 	}
 }

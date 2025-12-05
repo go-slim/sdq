@@ -42,7 +42,6 @@ func TestMemoryStorageSaveJob(t *testing.T) {
 		t.Errorf("SaveJob duplicate = %v, want ErrJobExists", err)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestMemoryStorageUpdateJobMeta(t *testing.T) {
@@ -88,8 +87,6 @@ func TestMemoryStorageUpdateJobMeta(t *testing.T) {
 		t.Errorf("UpdateJobMeta non-existent = %v, want ErrNotFound", err)
 	}
 
-	ReleaseJobMeta(meta)
-	ReleaseJobMeta(nonExistent)
 }
 
 func TestMemoryStorageGetJobMeta(t *testing.T) {
@@ -126,7 +123,6 @@ func TestMemoryStorageGetJobMeta(t *testing.T) {
 		t.Errorf("GetJobMeta non-existent = %v, want ErrNotFound", err)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestMemoryStorageGetJobBody(t *testing.T) {
@@ -158,7 +154,6 @@ func TestMemoryStorageGetJobBody(t *testing.T) {
 		t.Errorf("GetJobBody non-existent = %v, want ErrNotFound", err)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestMemoryStorageDeleteJob(t *testing.T) {
@@ -197,7 +192,6 @@ func TestMemoryStorageDeleteJob(t *testing.T) {
 		t.Errorf("DeleteJob non-existent = %v, want ErrNotFound", err)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestMemoryStorageScanJobMeta(t *testing.T) {

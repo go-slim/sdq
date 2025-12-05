@@ -8,8 +8,9 @@ import (
 
 // topic 表示一个命名队列
 // 只存储 JobMeta，不存储 Body
-// 注意：topic 的所有方法都不是线程安全的，调用者必须持有外部锁（TopicHub.mu）
+// topic 是线程安全的，内部使用 RWMutex 保护
 type topic struct {
+	mu       sync.RWMutex
 	name     string
 	ready    *jobMetaHeap        // 就绪任务优先级队列（按 Priority 排序）
 	delayed  *delayedJobHeap     // 延迟任务优先级队列（按 ReadyAt 排序）
@@ -17,30 +18,24 @@ type topic struct {
 	buried   *jobMetaHeap        // 埋葬任务优先级队列（按 Priority 排序）
 }
 
-// topicWrapper wraps a topic and provides thread-safe access
+// topicWrapper wraps a topic and provides Tickable interface
+// 注意：topicWrapper 不再需要独立的锁，因为 topic 本身是线程安全的
 type topicWrapper struct {
 	topic *topic
-	mu    sync.RWMutex // 独立的锁，不共享 TopicHub.mu
 }
 
-// ProcessTick implements Tickable interface with locking
+// ProcessTick implements Tickable interface
 func (w *topicWrapper) ProcessTick(now time.Time) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	w.topic.ProcessTick(now)
 }
 
-// NextTickTime implements Tickable interface with locking
+// NextTickTime implements Tickable interface
 func (w *topicWrapper) NextTickTime() time.Time {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
 	return w.topic.NextTickTime()
 }
 
-// NeedsTick implements Tickable interface with locking
+// NeedsTick implements Tickable interface
 func (w *topicWrapper) NeedsTick() bool {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
 	return w.topic.NeedsTick()
 }
 
@@ -56,15 +51,18 @@ func newTopic(name string) *topic {
 }
 
 // === Ready 队列操作 ===
-// 注意：调用者必须持有 Queue.mu
 
 // pushReady 添加就绪任务
 func (t *topic) pushReady(meta *JobMeta) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	heap.Push(t.ready, meta)
 }
 
 // popReady 获取并移除优先级最高的就绪任务
 func (t *topic) popReady() *JobMeta {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.ready.Len() == 0 {
 		return nil
 	}
@@ -73,6 +71,8 @@ func (t *topic) popReady() *JobMeta {
 
 // peekReady 查看但不移除优先级最高的就绪任务
 func (t *topic) peekReady() *JobMeta {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	if t.ready.Len() == 0 {
 		return nil
 	}
@@ -81,19 +81,24 @@ func (t *topic) peekReady() *JobMeta {
 
 // removeReady 从就绪队列移除任务
 func (t *topic) removeReady(id uint64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.ready.remove(id)
 }
 
 // === Delayed 队列操作 ===
-// 注意：调用者必须持有 Queue.mu
 
 // pushDelayed 添加延迟任务
 func (t *topic) pushDelayed(meta *JobMeta) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	heap.Push(t.delayed, meta)
 }
 
 // popDelayed 获取并移除最早到期的延迟任务
 func (t *topic) popDelayed() *JobMeta {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.delayed.Len() == 0 {
 		return nil
 	}
@@ -102,6 +107,8 @@ func (t *topic) popDelayed() *JobMeta {
 
 // peekDelayed 查看但不移除最早到期的延迟任务
 func (t *topic) peekDelayed() *JobMeta {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	if t.delayed.Len() == 0 {
 		return nil
 	}
@@ -110,19 +117,24 @@ func (t *topic) peekDelayed() *JobMeta {
 
 // removeDelayed 从延迟队列移除任务
 func (t *topic) removeDelayed(id uint64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.delayed.remove(id)
 }
 
 // === Reserved 队列操作 ===
-// 注意：调用者必须持有 Queue.mu
 
 // addReserved 添加保留任务
 func (t *topic) addReserved(meta *JobMeta) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.reserved[meta.ID] = meta
 }
 
 // removeReserved 移除保留任务
 func (t *topic) removeReserved(id uint64) *JobMeta {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	meta := t.reserved[id]
 	delete(t.reserved, id)
 	return meta
@@ -130,19 +142,24 @@ func (t *topic) removeReserved(id uint64) *JobMeta {
 
 // getReserved 获取保留任务
 func (t *topic) getReserved(id uint64) *JobMeta {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	return t.reserved[id]
 }
 
 // === Buried 队列操作 ===
-// 注意：调用者必须持有 Queue.mu
 
 // pushBuried 添加埋葬任务
 func (t *topic) pushBuried(meta *JobMeta) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	heap.Push(t.buried, meta)
 }
 
 // popBuried 获取并移除优先级最高的埋葬任务
 func (t *topic) popBuried() *JobMeta {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.buried.Len() == 0 {
 		return nil
 	}
@@ -151,6 +168,8 @@ func (t *topic) popBuried() *JobMeta {
 
 // peekBuried 查看但不移除优先级最高的埋葬任务
 func (t *topic) peekBuried() *JobMeta {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	if t.buried.Len() == 0 {
 		return nil
 	}
@@ -159,14 +178,17 @@ func (t *topic) peekBuried() *JobMeta {
 
 // removeBuried 从埋葬队列移除任务
 func (t *topic) removeBuried(id uint64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	return t.buried.remove(id)
 }
 
 // === 统计信息 ===
 
 // stats 返回统计信息
-// 注意：调用者必须持有 Queue.mu
 func (t *topic) stats() *TopicStats {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	return &TopicStats{
 		Name:         t.name,
 		ReadyJobs:    t.ready.Len(),
@@ -189,13 +211,16 @@ func (t *topic) ProcessTick(now time.Time) {
 }
 
 // NextTickTime 返回下一个需要 tick 的时间
-// 注意：调用者必须持有 Queue.mu（通过 topicWrapper）
 func (t *topic) NextTickTime() time.Time {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	var nextTime time.Time
 	hasNext := false
 
 	// 检查 Delayed 队列
-	if delayedMeta := t.peekDelayed(); delayedMeta != nil {
+	if t.delayed.Len() > 0 {
+		delayedMeta := t.delayed.items[0]
 		nextTime = delayedMeta.ReadyAt
 		hasNext = true
 	}
@@ -219,34 +244,36 @@ func (t *topic) NextTickTime() time.Time {
 }
 
 // NeedsTick 是否需要 tick
-// 注意：调用者必须持有 Queue.mu（通过 topicWrapper）
 func (t *topic) NeedsTick() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	return t.delayed.Len() > 0 || len(t.reserved) > 0
 }
 
 // processDelayed 处理延迟任务到期
-// 注意：调用者必须持有 Queue.mu
 func (t *topic) processDelayed(now time.Time) {
-	for {
-		meta := t.peekDelayed()
-		if meta == nil {
-			break
-		}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for t.delayed.Len() > 0 {
+		meta := t.delayed.items[0]
 
 		if !meta.ShouldBeReady(now) {
 			break
 		}
 
 		// 从 Delayed 移到 Ready
-		t.popDelayed()
+		heap.Pop(t.delayed)
 		meta.State = StateReady
-		t.pushReady(meta)
+		heap.Push(t.ready, meta)
 	}
 }
 
 // processReservedTimeout 处理保留任务超时
-// 注意：调用者必须持有 Queue.mu
 func (t *topic) processReservedTimeout(now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	// 收集超时的任务
 	timeoutIDs := make([]uint64, 0)
 	for id, meta := range t.reserved {
@@ -257,16 +284,163 @@ func (t *topic) processReservedTimeout(now time.Time) {
 
 	// 处理超时任务
 	for _, id := range timeoutIDs {
-		meta := t.removeReserved(id)
+		meta := t.reserved[id]
+		delete(t.reserved, id)
 		if meta != nil {
 			meta.State = StateReady
 			meta.Timeouts++
 			meta.Releases++
 			meta.ReservedAt = time.Time{}
 			meta.ReadyAt = now
-			t.pushReady(meta)
+			heap.Push(t.ready, meta)
 		}
 	}
+}
+
+// === 批量操作（用于 TopicHub 内部，需要原子操作多个队列） ===
+
+// popReadyAndAddReserved 原子地从 Ready 弹出并加入 Reserved
+func (t *topic) popReadyAndAddReserved(now time.Time) *JobMeta {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.ready.Len() == 0 {
+		return nil
+	}
+
+	meta := heap.Pop(t.ready).(*JobMeta)
+	meta.State = StateReserved
+	meta.ReservedAt = now
+	meta.Reserves++
+	t.reserved[meta.ID] = meta
+
+	return meta
+}
+
+// removeReservedAndPushReady 原子地从 Reserved 移除并加入 Ready（用于 Release）
+func (t *topic) removeReservedAndPushReady(id uint64, priority uint32, now time.Time) *JobMeta {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	meta := t.reserved[id]
+	if meta == nil {
+		return nil
+	}
+	delete(t.reserved, id)
+
+	meta.Priority = priority
+	meta.Releases++
+	meta.ReservedAt = time.Time{}
+	meta.State = StateReady
+	meta.ReadyAt = now
+	heap.Push(t.ready, meta)
+
+	return meta
+}
+
+// removeReservedAndPushDelayed 原子地从 Reserved 移除并加入 Delayed（用于 Release with delay）
+func (t *topic) removeReservedAndPushDelayed(id uint64, priority uint32, readyAt time.Time) *JobMeta {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	meta := t.reserved[id]
+	if meta == nil {
+		return nil
+	}
+	delete(t.reserved, id)
+
+	meta.Priority = priority
+	meta.Releases++
+	meta.ReservedAt = time.Time{}
+	meta.State = StateDelayed
+	meta.ReadyAt = readyAt
+	heap.Push(t.delayed, meta)
+
+	return meta
+}
+
+// removeReservedAndPushBuried 原子地从 Reserved 移除并加入 Buried（用于 Bury）
+func (t *topic) removeReservedAndPushBuried(id uint64, priority uint32, now time.Time) *JobMeta {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	meta := t.reserved[id]
+	if meta == nil {
+		return nil
+	}
+	delete(t.reserved, id)
+
+	meta.State = StateBuried
+	meta.Priority = priority
+	meta.BuriedAt = now
+	meta.Buries++
+	meta.ReservedAt = time.Time{}
+	heap.Push(t.buried, meta)
+
+	return meta
+}
+
+// popBuriedAndPushReady 原子地从 Buried 弹出并加入 Ready（用于 Kick）
+func (t *topic) popBuriedAndPushReady(now time.Time) *JobMeta {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.buried.Len() == 0 {
+		return nil
+	}
+
+	meta := heap.Pop(t.buried).(*JobMeta)
+	meta.State = StateReady
+	meta.BuriedAt = time.Time{}
+	meta.Kicks++
+	meta.ReadyAt = now
+	heap.Push(t.ready, meta)
+
+	return meta
+}
+
+// removeBuriedByIdAndPushReady 原子地从 Buried 移除指定任务并加入 Ready（用于 KickJob）
+func (t *topic) removeBuriedByIdAndPushReady(id uint64, now time.Time) *JobMeta {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// 使用 removeAndReturn 来获取被移除的 meta
+	meta := t.buried.removeAndReturn(id)
+	if meta == nil {
+		return nil
+	}
+
+	meta.State = StateReady
+	meta.BuriedAt = time.Time{}
+	meta.Kicks++
+	meta.ReadyAt = now
+	heap.Push(t.ready, meta)
+
+	return meta
+}
+
+// findJob 在所有队列中查找任务
+func (t *topic) findJob(id uint64) *JobMeta {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	// 检查 Ready
+	if meta := t.ready.find(id); meta != nil {
+		return meta
+	}
+	// 检查 Delayed
+	if meta := t.delayed.find(id); meta != nil {
+		return meta
+	}
+	// 检查 Reserved
+	if meta := t.reserved[id]; meta != nil {
+		return meta
+	}
+	// 检查 Buried
+	if meta := t.buried.find(id); meta != nil {
+		return meta
+	}
+	return nil
 }
 
 // === jobMetaHeap 实现任务元数据优先级堆（最小堆，按 Priority 排序） ===
@@ -341,6 +515,15 @@ func (h *jobMetaHeap) find(id uint64) *JobMeta {
 		return nil
 	}
 	return h.items[idx]
+}
+
+// removeAndReturn 移除并返回指定任务
+func (h *jobMetaHeap) removeAndReturn(id uint64) *JobMeta {
+	idx, ok := h.index[id]
+	if !ok {
+		return nil
+	}
+	return heap.Remove(h, idx).(*JobMeta)
 }
 
 // === delayedJobHeap 延迟任务堆（按 ReadyAt 排序） ===

@@ -11,14 +11,34 @@ import (
 	"go-slim.dev/sdq"
 )
 
+// unregisterTask 从注册表中移除任务（仅用于测试）
+func unregisterTask(name string) {
+	mu.Lock()
+	defer mu.Unlock()
+	delete(registry, name)
+}
+
+// exampleCounter 用于生成唯一的示例任务名称（支持 -count=N）
+var exampleCounter atomic.Int64
+
+// uniqueExampleName 生成唯一的示例任务名称
+func uniqueExampleName(base string) string {
+	return fmt.Sprintf("%s-%d", base, exampleCounter.Add(1))
+}
+
 // TestTaskRegistration 测试任务注册
 func TestTaskRegistration(t *testing.T) {
 	type TestData struct {
 		Value int `json:"value"`
 	}
 
+	taskName := "test-registration-" + t.Name()
+	t.Cleanup(func() {
+		unregisterTask(taskName)
+	})
+
 	// 注册任务
-	tsk := Register("test-registration", &Config{
+	tsk := Register(taskName, &Config{
 		Handler: func(ctx context.Context, data TestData) error {
 			return nil
 		},
@@ -30,12 +50,12 @@ func TestTaskRegistration(t *testing.T) {
 		t.Fatal("Register returned nil")
 	}
 
-	if tsk.name != "test-registration" {
-		t.Errorf("task.name = %s, want test-registration", tsk.name)
+	if tsk.name != taskName {
+		t.Errorf("task.name = %s, want %s", tsk.name, taskName)
 	}
 
 	// 检查任务是否已注册
-	registered, ok := Get("test-registration")
+	registered, ok := Get(taskName)
 	if !ok {
 		t.Error("task not found in registry")
 	}
@@ -124,8 +144,11 @@ func TestTaskPublish(t *testing.T) {
 
 		var processedCount atomic.Int32
 
-		// 注册任务
-		taskName := "test-publish-" + storage.Type.String()
+		// 注册任务（使用唯一名称支持 -count=N）
+		taskName := fmt.Sprintf("test-publish-%s-%d", storage.Type.String(), exampleCounter.Add(1))
+		t.Cleanup(func() {
+			unregisterTask(taskName)
+		})
 		task := Register(taskName, &Config{
 			Handler: func(ctx context.Context, data TestData) error {
 				processedCount.Add(1)
@@ -197,8 +220,11 @@ func TestTaskWithDelay(t *testing.T) {
 			Value int `json:"value"`
 		}
 
-		// 注册任务
-		taskName := "test-delay-" + storage.Type.String()
+		// 注册任务（使用唯一名称支持 -count=N）
+		taskName := fmt.Sprintf("test-delay-%s-%d", storage.Type.String(), exampleCounter.Add(1))
+		t.Cleanup(func() {
+			unregisterTask(taskName)
+		})
 		task := Register(taskName, &Config{
 			Handler: func(ctx context.Context, data TestData) error {
 				return nil
@@ -244,8 +270,11 @@ func TestTaskWithPriority(t *testing.T) {
 		var processedOrder []int
 		var mu sync.Mutex
 
-		// 注册任务
-		taskName := "test-priority-" + storage.Type.String()
+		// 注册任务（使用唯一名称支持 -count=N）
+		taskName := fmt.Sprintf("test-priority-%s-%d", storage.Type.String(), exampleCounter.Add(1))
+		t.Cleanup(func() {
+			unregisterTask(taskName)
+		})
 		task := Register(taskName, &Config{
 			Handler: func(ctx context.Context, data TestData) error {
 				mu.Lock()
@@ -323,8 +352,11 @@ func TestTaskPublishAndReserveMultiple(t *testing.T) {
 
 		var processedCount atomic.Int32
 
-		// 注册任务
-		taskName := "test-multiple-" + storage.Type.String()
+		// 注册任务（使用唯一名称支持 -count=N）
+		taskName := fmt.Sprintf("test-multiple-%s-%d", storage.Type.String(), exampleCounter.Add(1))
+		t.Cleanup(func() {
+			unregisterTask(taskName)
+		})
 		task := Register(taskName, &Config{
 			Handler: func(ctx context.Context, data TestData) error {
 				processedCount.Add(1)
@@ -401,8 +433,12 @@ func Example_basicUsage() {
 		Status  string `json:"status"`
 	}
 
+	// 生成唯一任务名称（支持 -count=N）
+	processOrderName := uniqueExampleName("example-process-order")
+	sendNotificationName := uniqueExampleName("example-send-notification")
+
 	// 1. 注册任务
-	processOrderTask := Register("example-process-order", &Config{
+	processOrderTask := Register(processOrderName, &Config{
 		Handler: func(ctx context.Context, data OrderData) error {
 			// 实际业务逻辑
 			time.Sleep(10 * time.Millisecond)
@@ -412,7 +448,7 @@ func Example_basicUsage() {
 		TTR:      60 * time.Second,
 	})
 
-	sendNotificationTask := Register("example-send-notification", &Config{
+	sendNotificationTask := Register(sendNotificationName, &Config{
 		Handler: func(ctx context.Context, data OrderData) error {
 			return nil
 		},
@@ -467,7 +503,7 @@ func Example_basicUsage() {
 	}, Priority(1)) // 最高优先级
 
 	// 7. 启动工作器处理任务
-	worker := NewWorker(q, "example-process-order", "example-send-notification")
+	worker := NewWorker(q, processOrderName, sendNotificationName)
 	_ = worker.Start(3) // 启动 3 个工作协程
 	defer worker.Stop()
 
@@ -487,7 +523,10 @@ func Example_multipleWorkers() {
 		Status  string `json:"status"`
 	}
 
-	processOrderTask := Register("example-multiple-workers", &Config{
+	// 生成唯一任务名称（支持 -count=N）
+	taskName := uniqueExampleName("example-multiple-workers")
+
+	processOrderTask := Register(taskName, &Config{
 		Handler: func(ctx context.Context, data OrderData) error {
 			time.Sleep(10 * time.Millisecond)
 			return nil
@@ -517,7 +556,7 @@ func Example_multipleWorkers() {
 	}
 
 	// 启动多个工作器并发处理
-	worker := NewWorker(q, "example-multiple-workers")
+	worker := NewWorker(q, taskName)
 	_ = worker.Start(5) // 5 个并发工作器
 	defer worker.Stop()
 
@@ -539,8 +578,12 @@ func Example_realWorldUsage() {
 		Reason  string `json:"reason"`
 	}
 
+	// 生成唯一任务名称（支持 -count=N）
+	autoOrderName := uniqueExampleName("example-auto-order")
+	orderCancelName := uniqueExampleName("example-order-cancel")
+
 	// 注册任务处理器
-	autoOrderTask := Register("example-auto-order", &Config{
+	autoOrderTask := Register(autoOrderName, &Config{
 		Handler: func(ctx context.Context, data AutoOrderData) error {
 			// 实际业务逻辑：处理自动订购
 			return nil
@@ -548,7 +591,7 @@ func Example_realWorldUsage() {
 		Priority: 10,
 	})
 
-	orderCancelTask := Register("example-order-cancel", &Config{
+	orderCancelTask := Register(orderCancelName, &Config{
 		Handler: func(ctx context.Context, data OrderCancelData) error {
 			// 实际业务逻辑：处理订单取消
 			return nil
@@ -568,7 +611,7 @@ func Example_realWorldUsage() {
 	orderCancelTask.SetQueue(q)
 
 	// 创建并启动工作器
-	worker := NewWorker(q, "example-auto-order", "example-order-cancel")
+	worker := NewWorker(q, autoOrderName, orderCancelName)
 	_ = worker.Start(5) // 启动 5 个并发工作器
 	defer worker.Stop()
 

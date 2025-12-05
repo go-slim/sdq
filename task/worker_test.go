@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -123,12 +124,15 @@ func TestWorkerHandleJob(t *testing.T) {
 	}
 
 	var processed atomic.Int32
+	var receivedMu sync.Mutex
 	var receivedValue string
 
 	taskHandler := Register("test-handle", &Config{
 		Handler: func(ctx context.Context, data TestData) error {
 			processed.Add(1)
+			receivedMu.Lock()
 			receivedValue = data.Value
+			receivedMu.Unlock()
 			return nil
 		},
 		Priority: 10,
@@ -159,8 +163,11 @@ func TestWorkerHandleJob(t *testing.T) {
 		t.Errorf("processed = %d, want 1", processed.Load())
 	}
 
-	if receivedValue != "hello" {
-		t.Errorf("receivedValue = %q, want %q", receivedValue, "hello")
+	receivedMu.Lock()
+	gotValue := receivedValue
+	receivedMu.Unlock()
+	if gotValue != "hello" {
+		t.Errorf("receivedValue = %q, want %q", gotValue, "hello")
 	}
 }
 

@@ -94,7 +94,6 @@ func TestSQLiteStorageSaveJob(t *testing.T) {
 		t.Errorf("SaveJob duplicate = %v, want ErrJobExists", err)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 // TestSQLiteStorage_ClosedOperation 测试关闭后操作
@@ -128,7 +127,6 @@ func TestSQLiteStorage_ClosedOperation(t *testing.T) {
 		t.Error("SaveJob after Close should return error")
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 // TestSQLiteStorage_ConcurrentWrites 测试并发写入
@@ -159,7 +157,6 @@ func TestSQLiteStorage_ConcurrentWrites(t *testing.T) {
 				if err != nil {
 					t.Errorf("SaveJob error: %v", err)
 				}
-				ReleaseJobMeta(meta)
 			}
 		}(i)
 	}
@@ -222,7 +219,6 @@ func TestSQLiteStorage_LargeBody(t *testing.T) {
 		}
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 // TestSQLiteStorage_BatchOperations 测试批量操作
@@ -249,7 +245,6 @@ func TestSQLiteStorage_BatchOperations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SaveJob %d error: %v", i, err)
 		}
-		ReleaseJobMeta(meta)
 	}
 
 	// 等待批量写入完成
@@ -351,8 +346,6 @@ func TestSQLiteStorageUpdateJobMetaSync(t *testing.T) {
 		t.Errorf("UpdateJobMetaSync non-existent = %v, want ErrNotFound", err)
 	}
 
-	ReleaseJobMeta(meta)
-	ReleaseJobMeta(nonExistent)
 }
 
 func TestSQLiteStorageGetJobMeta(t *testing.T) {
@@ -402,7 +395,6 @@ func TestSQLiteStorageGetJobMeta(t *testing.T) {
 		t.Errorf("GetJobMeta non-existent = %v, want ErrNotFound", err)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestSQLiteStorageGetJobBody(t *testing.T) {
@@ -444,7 +436,6 @@ func TestSQLiteStorageGetJobBody(t *testing.T) {
 		t.Errorf("GetJobBody non-existent = %v, want ErrNotFound", err)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestSQLiteStorageDeleteJob(t *testing.T) {
@@ -488,7 +479,6 @@ func TestSQLiteStorageDeleteJob(t *testing.T) {
 		t.Errorf("DeleteJob non-existent = %v, want ErrNotFound", err)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestSQLiteStorageScanJobMeta(t *testing.T) {
@@ -761,7 +751,6 @@ func TestSQLiteStorageAsyncUpdate(t *testing.T) {
 		t.Errorf("State = %v, want %v", gotMeta.State, StateReserved)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 // TestSQLiteStorage_ConcurrentReadWrite tests high-concurrency read/write conflicts
@@ -785,7 +774,6 @@ func TestSQLiteStorage_ConcurrentReadWrite(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SaveJob %d error: %v", i, err)
 		}
-		ReleaseJobMeta(meta)
 	}
 
 	const duration = 1 * time.Second
@@ -816,7 +804,6 @@ func TestSQLiteStorage_ConcurrentReadWrite(t *testing.T) {
 					meta.Reserves++
 					meta.State = StateReserved
 					_ = storage.UpdateJobMeta(ctx, meta)
-					ReleaseJobMeta(meta)
 					atomic.AddUint64(&writeOps, 1)
 				}
 			}
@@ -845,7 +832,6 @@ func TestSQLiteStorage_ConcurrentReadWrite(t *testing.T) {
 			meta := NewJobMeta(jobID, "test-delete", 10, 0, 30*time.Second)
 			_ = storage.SaveJob(ctx, meta, []byte("temp"))
 			_ = storage.DeleteJob(ctx, jobID)
-			ReleaseJobMeta(meta)
 			atomic.AddUint64(&deleteOps, 1)
 		}
 	})
@@ -887,7 +873,6 @@ func TestSQLiteStorage_ConcurrentUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveJob error: %v", err)
 	}
-	ReleaseJobMeta(meta)
 
 	// Multiple goroutines updating the same job
 	const numGoroutines = 20
@@ -911,7 +896,6 @@ func TestSQLiteStorage_ConcurrentUpdates(t *testing.T) {
 				if err != nil {
 					t.Errorf("UpdateJobMetaSync error: %v", err)
 				}
-				ReleaseJobMeta(meta)
 			}
 		}(i)
 	}
@@ -932,7 +916,6 @@ func TestSQLiteStorage_ConcurrentUpdates(t *testing.T) {
 
 	t.Logf("Final Reserves = %d (out of %d attempted updates)", finalMeta.Reserves, numGoroutines*updatesPerGoroutine)
 
-	ReleaseJobMeta(finalMeta)
 }
 
 // TestSQLiteStorage_StressTest tests storage under heavy load
@@ -966,7 +949,6 @@ func TestSQLiteStorage_StressTest(t *testing.T) {
 				id := atomic.AddUint64(&jobCounter, 1)
 				meta := NewJobMeta(id, "stress-test", 10, 0, 30*time.Second)
 				_ = storage.SaveJob(ctx, meta, []byte("body"))
-				ReleaseJobMeta(meta)
 				atomic.AddUint64(&opCount, 1)
 			}
 		})

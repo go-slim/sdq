@@ -550,8 +550,8 @@ func TestTimeWheelTicker_RecoverAfterPanic(t *testing.T) {
 	task := newPanicTickable(time.Now().Add(60*time.Millisecond), true, "first panic")
 	ticker.Register("recover-task", task)
 
-	// 等待第一次 tick（会 panic）
-	time.Sleep(150 * time.Millisecond)
+	// 等待第一次 tick（会 panic）- 使用更长的等待时间以适应 CI 环境
+	time.Sleep(300 * time.Millisecond)
 
 	firstCount := task.GetTickCount()
 	if firstCount == 0 {
@@ -562,8 +562,8 @@ func TestTimeWheelTicker_RecoverAfterPanic(t *testing.T) {
 	// 禁用 panic
 	task.SetShouldPanic(false)
 
-	// 等待更多 tick
-	time.Sleep(200 * time.Millisecond)
+	// 等待更多 tick - 使用更长的等待时间
+	time.Sleep(400 * time.Millisecond)
 
 	secondCount := task.GetTickCount()
 	if secondCount <= firstCount {

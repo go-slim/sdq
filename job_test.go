@@ -76,7 +76,6 @@ func TestNewJobMeta(t *testing.T) {
 		t.Error("Counters should be zero")
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestNewJobMetaNoDelay(t *testing.T) {
@@ -88,7 +87,6 @@ func TestNewJobMetaNoDelay(t *testing.T) {
 		t.Errorf("ReadyAt should be close to CreatedAt when delay = 0, diff = %v", diff)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestJobMetaClone(t *testing.T) {
@@ -120,7 +118,6 @@ func TestJobMetaClone(t *testing.T) {
 		t.Error("Modifying clone should not affect original")
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestJobMetaShouldBeReady(t *testing.T) {
@@ -147,7 +144,6 @@ func TestJobMetaShouldBeReady(t *testing.T) {
 		t.Error("ShouldBeReady should return false for non-delayed state")
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestJobMetaShouldTimeout(t *testing.T) {
@@ -173,7 +169,6 @@ func TestJobMetaShouldTimeout(t *testing.T) {
 		t.Error("ShouldTimeout should return false for non-reserved state")
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestJobMetaReserveDeadline(t *testing.T) {
@@ -197,7 +192,6 @@ func TestJobMetaReserveDeadline(t *testing.T) {
 		t.Error("ReserveDeadline should return zero time for non-reserved state")
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestJobMetaTimeUntilReady(t *testing.T) {
@@ -226,7 +220,6 @@ func TestJobMetaTimeUntilReady(t *testing.T) {
 		t.Errorf("TimeUntilReady = %v, want 0 for non-delayed state", duration)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestJobMetaTimeUntilTimeout(t *testing.T) {
@@ -255,7 +248,6 @@ func TestJobMetaTimeUntilTimeout(t *testing.T) {
 		t.Errorf("TimeUntilTimeout = %v, want 0 for non-reserved state", duration)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestNewJob(t *testing.T) {
@@ -282,7 +274,6 @@ func TestNewJob(t *testing.T) {
 		t.Errorf("Body() = %s, want %s", job.Body(), body)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 func TestNewJobWithStorage(t *testing.T) {
@@ -303,16 +294,7 @@ func TestNewJobWithStorage(t *testing.T) {
 			t.Error("GetBody should fail when job not in storage")
 		}
 
-		ReleaseJobMeta(meta)
 	})
-}
-
-func TestReleaseJobMeta(t *testing.T) {
-	meta := NewJobMeta(1, "test", 10, 0, 30*time.Second)
-
-	// Should not panic
-	ReleaseJobMeta(meta)
-	ReleaseJobMeta(nil) // nil should be safe
 }
 
 // TestJob_OperationMethods 测试 Job 的操作方法
@@ -487,7 +469,6 @@ func TestJobMeta_BoundaryValues(t *testing.T) {
 			t.Errorf("ID = %d, want %d", meta.ID, maxID)
 		}
 
-		ReleaseJobMeta(meta)
 	})
 
 	t.Run("MaxPriority", func(t *testing.T) {
@@ -499,7 +480,6 @@ func TestJobMeta_BoundaryValues(t *testing.T) {
 			t.Errorf("Priority = %d, want %d", meta.Priority, maxPriority)
 		}
 
-		ReleaseJobMeta(meta)
 	})
 
 	t.Run("ZeroPriority", func(t *testing.T) {
@@ -510,7 +490,6 @@ func TestJobMeta_BoundaryValues(t *testing.T) {
 			t.Errorf("Priority = %d, want 0", meta.Priority)
 		}
 
-		ReleaseJobMeta(meta)
 	})
 
 	t.Run("ExtremelyLongDelay", func(t *testing.T) {
@@ -527,7 +506,6 @@ func TestJobMeta_BoundaryValues(t *testing.T) {
 			t.Error("ReadyAt should be far in the future")
 		}
 
-		ReleaseJobMeta(meta)
 	})
 
 	t.Run("ZeroDelay", func(t *testing.T) {
@@ -544,7 +522,6 @@ func TestJobMeta_BoundaryValues(t *testing.T) {
 			t.Errorf("ReadyAt should be close to CreatedAt, diff = %v", diff)
 		}
 
-		ReleaseJobMeta(meta)
 	})
 
 	t.Run("ZeroTTR", func(t *testing.T) {
@@ -564,7 +541,6 @@ func TestJobMeta_BoundaryValues(t *testing.T) {
 			t.Error("Job with zero TTR should timeout immediately")
 		}
 
-		ReleaseJobMeta(meta)
 	})
 
 	t.Run("VeryLongTTR", func(t *testing.T) {
@@ -576,7 +552,6 @@ func TestJobMeta_BoundaryValues(t *testing.T) {
 			t.Errorf("TTR = %v, want %v", meta.TTR, longTTR)
 		}
 
-		ReleaseJobMeta(meta)
 	})
 
 	t.Run("MinimalJobMeta", func(t *testing.T) {
@@ -593,7 +568,6 @@ func TestJobMeta_BoundaryValues(t *testing.T) {
 			t.Errorf("Priority = %d, want 0", meta.Priority)
 		}
 
-		ReleaseJobMeta(meta)
 	})
 }
 
@@ -622,7 +596,6 @@ func TestJobMeta_CounterOverflow(t *testing.T) {
 		t.Errorf("Reserves = %d, want %d", meta.Reserves, math.MaxInt)
 	}
 
-	ReleaseJobMeta(meta)
 }
 
 // TestJob_ConcurrentOperations 测试同一 Job 被多个操作同时修改

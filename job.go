@@ -7,18 +7,6 @@ import (
 	"time"
 )
 
-// JobMeta 对象池，减少 GC 压力
-// 性能测试结果（M4 Pro）：
-//   - 使用对象池: 7.9 ns/op, 0 allocs/op (无堆分配)
-//   - 不用对象池: 58.6 ns/op, 1 allocs/op (每次堆分配 256B)
-//
-// 在高并发场景下（每秒数千任务），对象池可显著降低 GC 压力
-var jobMetaPool = sync.Pool{
-	New: func() any {
-		return &JobMeta{}
-	},
-}
-
 // State 任务状态
 type State int
 
@@ -102,7 +90,7 @@ type Job struct {
 	body []byte   // 任务数据（可能很大，按需加载）私有字段
 
 	// 延迟加载支持
-	storage  Storage   // 存储后端引用
+	storage  Storage   // 存储后端引用（nil 表示 body 已加载）
 	bodyOnce sync.Once // 确保 Body 只加载一次（并发安全）
 	bodyErr  error     // Body 加载错误
 
@@ -112,13 +100,13 @@ type Job struct {
 
 // GetBody 获取任务 Body（延迟加载，并发安全）
 func (j *Job) GetBody() ([]byte, error) {
-	j.bodyOnce.Do(func() {
-		// 如果没有 storage，说明是内存模式或已经传入了 body
-		if j.storage == nil {
-			return
-		}
+	// 快速路径：storage 为 nil 说明 body 已在创建时传入
+	if j.storage == nil {
+		return j.body, nil
+	}
 
-		// 从 Storage 加载
+	// 延迟加载路径
+	j.bodyOnce.Do(func() {
 		j.body, j.bodyErr = j.storage.GetJobBody(context.Background(), j.Meta.ID)
 		if j.bodyErr != nil {
 			j.bodyErr = fmt.Errorf("load job body: %w", j.bodyErr)
@@ -135,12 +123,12 @@ func (j *Job) Body() []byte {
 	return body
 }
 
-// NewJobMeta 创建新的任务元数据（从对象池获取）
+// NewJobMeta 创建新的任务元数据
 func NewJobMeta(id uint64, topic string, priority uint32, delay, ttr time.Duration) *JobMeta {
 	now := time.Now()
 
-	// 从对象池获取（已在 ReleaseJobMeta 中重置为零值）
-	meta := jobMetaPool.Get().(*JobMeta)
+	// 直接创建新对象（暂时禁用对象池以排查问题）
+	meta := &JobMeta{}
 
 	// 设置字段
 	meta.ID = id
@@ -161,40 +149,23 @@ func NewJobMeta(id uint64, topic string, priority uint32, delay, ttr time.Durati
 	return meta
 }
 
-// ReleaseJobMeta 释放任务元数据回对象池
-// 注意：释放后不应再使用该对象
-func ReleaseJobMeta(meta *JobMeta) {
-	if meta != nil {
-		// 重置为零值，避免对象池污染
-		// 设计选择：在 Put 时重置而非 Get 时重置
-		// 优势：
-		//   1. 防御性更强：即使忘记在 NewJobMeta 中重置某字段也不会出 bug
-		//   2. 单一职责：ReleaseJobMeta 负责清理，NewJobMeta 只负责初始化
-		//   3. 易维护：新增字段时无需手动维护重置列表
-		// 性能：
-		//   虽然看起来是"分配新结构体"，但编译器会优化为逐字段清零（类似 memclr）
-		//   实测开销约 8ns，远小于一次堆分配（58ns），且不产生实际的堆分配
-		*meta = JobMeta{}
-		jobMetaPool.Put(meta)
-	}
-}
-
 // NewJob 创建完整任务（立即加载模式）
+// storage 为 nil 表示 body 已传入，GetBody 会直接返回
 func NewJob(meta *JobMeta, body []byte, queue *Queue) *Job {
-	job := &Job{
+	return &Job{
 		Meta:  meta,
 		body:  body,
 		queue: queue,
+		// storage 保持 nil，GetBody 会走快速路径
 	}
-	// 标记为已加载（通过调用一次 bodyOnce）
-	job.bodyOnce.Do(func() {})
-	return job
 }
 
 // NewJobWithStorage 创建任务（延迟加载模式）
+// 注意：meta 应该已经是克隆的副本（由 TryReserve 返回）
+// 此函数直接使用传入的 meta，不再重复克隆
 func NewJobWithStorage(meta *JobMeta, storage Storage, queue *Queue) *Job {
 	return &Job{
-		Meta:    meta.Clone(), // 克隆 meta,避免外部修改影响
+		Meta:    meta, // 直接使用，调用方需确保 meta 是独立副本
 		storage: storage,
 		queue:   queue,
 	}
