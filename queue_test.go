@@ -775,6 +775,11 @@ func TestReserve_ImmediateAvailable(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		// 等待恢复完成
+		if err := q.WaitForRecovery(5 * time.Second); err != nil {
+			t.Fatalf("WaitForRecovery failed: %v", err)
+		}
+
 		// 先添加任务
 		_, err = q.Put("test", []byte("immediate"), 1, 0, 60*time.Second)
 		if err != nil {
