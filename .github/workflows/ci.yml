@@ -53,8 +53,7 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./... -skip 'Example'
-        shell: bash
+        run: go test -v -race -coverprofile=coverage.out -covermode=atomic -skip 'Example' ./...
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
