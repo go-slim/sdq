@@ -14,9 +14,6 @@ concurrency:
 
 env:
   GO_VERSION: "1.25"
-  # For act compatibility - use local cache
-  GOCACHE: /tmp/go-build
-  GOMODCACHE: /tmp/go-mod
 
 jobs:
   lint:
