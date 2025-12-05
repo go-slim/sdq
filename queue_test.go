@@ -118,6 +118,9 @@ func ExampleQueue_priority() {
 	_ = q.Start()
 	defer func() { _ = q.Stop() }()
 
+	// 等待恢复完成
+	_ = q.WaitForRecovery(5 * time.Second)
+
 	// 添加不同优先级的任务
 	_, _ = q.Put("tasks", []byte("low priority"), 10, 0, 60*time.Second)
 	_, _ = q.Put("tasks", []byte("high priority"), 1, 0, 60*time.Second)
