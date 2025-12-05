@@ -121,12 +121,4 @@ jobs:
           cache: ${{ !env.ACT }}
 
       - name: Run benchmarks
-        run: go test -bench=. -benchmem -benchtime=100ms ./benchmarks/ | tee benchmark.txt
-        shell: bash
-
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results-${{ matrix.os }}
-          path: benchmark.txt
-        if: ${{ !env.ACT }}
+        run: go test -bench=. -benchmem -benchtime=100ms ./benchmarks/
