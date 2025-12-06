@@ -45,7 +45,7 @@ func ExampleQueue_basic() {
 	fmt.Printf("Created job: %d\n", jobID)
 
 	// Worker 保留任务
-	job, err := q.Reserve([]string{"email"}, 5*time.Second)
+	job, err := q.Reserve([]string{"email"}, TestTimeout(5*time.Second))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -94,10 +94,10 @@ func ExampleQueue_delayed() {
 	}
 
 	// 等待任务到期
-	time.Sleep(600 * time.Millisecond)
+	TestSleep(600 * time.Millisecond)
 
 	// 现在可以 Reserve
-	job, err := q.Reserve([]string{"notification"}, 1*time.Second)
+	job, err := q.Reserve([]string{"notification"}, TestTimeout(1*time.Second))
 	if err == nil {
 		fmt.Printf("Reserved job after delay: %d\n", job.Meta.ID)
 		_ = q.Delete(job.Meta.ID)
@@ -128,7 +128,7 @@ func ExampleQueue_priority() {
 
 	// Reserve 会按优先级顺序返回
 	for range 3 {
-		job, err := q.Reserve([]string{"tasks"}, 1*time.Second)
+		job, err := q.Reserve([]string{"tasks"}, TestTimeout(1*time.Second))
 		if err != nil {
 			fmt.Printf("Reserve error: %v\n", err)
 			continue
@@ -161,7 +161,7 @@ func ExampleQueue_release() {
 	_, _ = q.Put("retry", []byte("task"), 1, 0, 60*time.Second)
 
 	// Worker 1 保留任务
-	job, _ := q.Reserve([]string{"retry"}, 1*time.Second)
+	job, _ := q.Reserve([]string{"retry"}, TestTimeout(1*time.Second))
 	fmt.Printf("Worker 1 reserved job: %d\n", job.Meta.ID)
 
 	// 处理失败，释放任务（延迟 100ms 重试）
@@ -175,9 +175,9 @@ func ExampleQueue_release() {
 	}
 
 	// 等待延迟到期（TimeWheelTicker 会自动处理）
-	time.Sleep(150 * time.Millisecond)
+	TestSleep(150 * time.Millisecond)
 
-	job, err = q.Reserve([]string{"retry"}, 1*time.Second)
+	job, err = q.Reserve([]string{"retry"}, TestTimeout(1*time.Second))
 	if err == nil && job != nil {
 		fmt.Printf("Worker 2 reserved job: %d (retry)\n", job.Meta.ID)
 		_ = q.Delete(job.Meta.ID)
@@ -203,7 +203,7 @@ func ExampleQueue_bury() {
 	_, _ = q.Put("process", []byte("task"), 1, 0, 60*time.Second)
 
 	// 保留任务
-	job, _ := q.Reserve([]string{"process"}, 1*time.Second)
+	job, _ := q.Reserve([]string{"process"}, TestTimeout(1*time.Second))
 
 	// 遇到无法处理的错误，埋葬任务
 	_ = q.Bury(job.Meta.ID, 1)
@@ -220,7 +220,7 @@ func ExampleQueue_bury() {
 	fmt.Printf("Kicked %d jobs\n", count)
 
 	// 现在可以 Reserve
-	job, _ = q.Reserve([]string{"process"}, 1*time.Second)
+	job, _ = q.Reserve([]string{"process"}, TestTimeout(1*time.Second))
 	fmt.Printf("Reserved job after kick: %d\n", job.Meta.ID)
 	_ = q.Delete(job.Meta.ID)
 
@@ -244,11 +244,11 @@ func ExampleQueue_touch() {
 	_, _ = q.Put("long-task", []byte("task"), 1, 0, 1*time.Second)
 
 	// 保留任务
-	job, _ := q.Reserve([]string{"long-task"}, 1*time.Second)
+	job, _ := q.Reserve([]string{"long-task"}, TestTimeout(1*time.Second))
 	fmt.Printf("Reserved job: %d, TTR: 1s\n", job.Meta.ID)
 
 	// 处理 800ms 后，发现还需要更多时间
-	time.Sleep(800 * time.Millisecond)
+	TestSleep(800 * time.Millisecond)
 
 	// Touch 延长 TTR
 	_ = q.Touch(job.Meta.ID) // 重置为原始 TTR
@@ -258,7 +258,7 @@ func ExampleQueue_touch() {
 	// q.Touch(job.Meta.ID, 30*time.Second)
 
 	// 继续处理...
-	time.Sleep(500 * time.Millisecond)
+	TestSleep(500 * time.Millisecond)
 
 	// 完成
 	_ = q.Delete(job.Meta.ID)
@@ -281,7 +281,7 @@ func ExampleQueue_stats() {
 	// 添加各种状态的任务
 	_, _ = q.Put("email", []byte("task1"), 1, 0, 60*time.Second)             // ready
 	_, _ = q.Put("email", []byte("task2"), 1, 5*time.Second, 60*time.Second) // delayed
-	job, _ := q.Reserve([]string{"email"}, 1*time.Second)                    // reserved
+	job, _ := q.Reserve([]string{"email"}, TestTimeout(1*time.Second))                    // reserved
 
 	// 查看整体统计
 	stats := q.Stats()
@@ -315,7 +315,7 @@ func ExampleQueue_multipleTopics() {
 	_, _ = q.Put("push", []byte("send push"), 1, 0, 60*time.Second)
 
 	// Worker 可以监听多个 topic
-	job, _ := q.Reserve([]string{"email", "sms", "push"}, 1*time.Second)
+	job, _ := q.Reserve([]string{"email", "sms", "push"}, TestTimeout(1*time.Second))
 	fmt.Printf("Reserved from topic: %s\n", job.Meta.Topic)
 	_ = q.Delete(job.Meta.ID)
 
@@ -352,7 +352,7 @@ func TestReserve_NoThunderingHerd(t *testing.T) {
 
 		for range workerCount {
 			wg.Go(func() {
-				job, err := q.Reserve([]string{"test"}, 2*time.Second)
+				job, err := q.Reserve([]string{"test"}, TestTimeout(2*time.Second))
 				if err == nil && job != nil {
 					reserveCount.Add(1)
 					_ = q.Delete(job.Meta.ID)
@@ -361,7 +361,7 @@ func TestReserve_NoThunderingHerd(t *testing.T) {
 		}
 
 		// 等待 workers 进入等待状态
-		time.Sleep(100 * time.Millisecond)
+		TestSleep(100 * time.Millisecond)
 
 		// 只添加一个任务
 		_, err = q.Put("test", []byte("task"), 1, 0, 60*time.Second)
@@ -405,7 +405,7 @@ func TestTouch_MaxTouches(t *testing.T) {
 		}
 
 		// Reserve 任务
-		job, err := q.Reserve([]string{"test"}, 1*time.Second)
+		job, err := q.Reserve([]string{"test"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Fatalf("Reserve failed: %v", err)
 		}
@@ -463,7 +463,7 @@ func TestTouch_MinTouchInterval(t *testing.T) {
 		}
 
 		// Reserve 任务
-		job, err := q.Reserve([]string{"test"}, 1*time.Second)
+		job, err := q.Reserve([]string{"test"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Fatalf("Reserve failed: %v", err)
 		}
@@ -481,7 +481,7 @@ func TestTouch_MinTouchInterval(t *testing.T) {
 		}
 
 		// 等待足够的间隔
-		time.Sleep(150 * time.Millisecond)
+		TestSleep(150 * time.Millisecond)
 
 		// 现在 Touch 应该成功
 		err = q.Touch(job.Meta.ID)
@@ -522,7 +522,7 @@ func TestTouch_MaxTouchDuration(t *testing.T) {
 		}
 
 		// Reserve 任务
-		job, err := q.Reserve([]string{"test"}, 1*time.Second)
+		job, err := q.Reserve([]string{"test"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Fatalf("Reserve failed: %v", err)
 		}
@@ -584,13 +584,13 @@ func TestTouch_ResetTTR(t *testing.T) {
 		}
 
 		// Reserve 任务
-		job, err := q.Reserve([]string{"test"}, 1*time.Second)
+		job, err := q.Reserve([]string{"test"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Fatalf("Reserve failed: %v", err)
 		}
 
 		// 等待 80ms（接近超时但未超时）
-		time.Sleep(80 * time.Millisecond)
+		TestSleep(80 * time.Millisecond)
 
 		// Touch 重置 TTR
 		err = job.Touch()
@@ -599,7 +599,7 @@ func TestTouch_ResetTTR(t *testing.T) {
 		}
 
 		// 再等待 80ms（如果没有 Touch，任务应该已经超时）
-		time.Sleep(80 * time.Millisecond)
+		TestSleep(80 * time.Millisecond)
 
 		// 任务应该仍然是 Reserved 状态（因为 Touch 重置了 TTR）
 		stats := q.Stats()
@@ -644,8 +644,8 @@ func TestReserve_FIFO(t *testing.T) {
 		for i := range 5 {
 			workerID := i
 			wg.Go(func() {
-				time.Sleep(time.Duration(workerID) * 10 * time.Millisecond) // 确保按顺序启动
-				job, err := q.Reserve([]string{"test"}, 3*time.Second)
+				TestSleep(time.Duration(workerID) * 10 * time.Millisecond) // 确保按顺序启动
+				job, err := q.Reserve([]string{"test"}, TestTimeout(3*time.Second))
 				if err == nil && job != nil {
 					mu.Lock()
 					order = append(order, workerID)
@@ -656,7 +656,7 @@ func TestReserve_FIFO(t *testing.T) {
 		}
 
 		// 等待所有 workers 进入等待状态
-		time.Sleep(200 * time.Millisecond)
+		TestSleep(200 * time.Millisecond)
 
 		// 添加 5 个任务
 		for range 5 {
@@ -664,7 +664,7 @@ func TestReserve_FIFO(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			time.Sleep(10 * time.Millisecond) // 确保任务逐个到达
+			TestSleep(10 * time.Millisecond) // 确保任务逐个到达
 		}
 
 		wg.Wait()
@@ -706,7 +706,7 @@ func TestReserve_MultipleTopics(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
-			job, err := q.Reserve([]string{"email", "sms", "push"}, 2*time.Second)
+			job, err := q.Reserve([]string{"email", "sms", "push"}, TestTimeout(2*time.Second))
 			if err == nil && job != nil {
 				receivedTopic = job.Meta.Topic
 				_ = q.Delete(job.Meta.ID)
@@ -714,7 +714,7 @@ func TestReserve_MultipleTopics(t *testing.T) {
 		}()
 
 		// 等待 worker 进入等待状态
-		time.Sleep(100 * time.Millisecond)
+		TestSleep(100 * time.Millisecond)
 
 		// 在 sms topic 添加任务
 		_, err = q.Put("sms", []byte("message"), 1, 0, 60*time.Second)
@@ -791,7 +791,7 @@ func TestReserve_ImmediateAvailable(t *testing.T) {
 
 		// Reserve 应该立即返回
 		start := time.Now()
-		job, err := q.Reserve([]string{"test"}, 5*time.Second)
+		job, err := q.Reserve([]string{"test"}, TestTimeout(5*time.Second))
 		elapsed := time.Since(start)
 
 		if err != nil {
@@ -1125,7 +1125,7 @@ func TestStress_DelayedJobs(t *testing.T) {
 		t.Logf("已添加 %d 个延迟任务", jobCount)
 
 		// 等待所有任务就绪
-		time.Sleep(600 * time.Millisecond)
+		TestSleep(600 * time.Millisecond)
 
 		// 统计
 		stats := q.Stats()
@@ -1172,7 +1172,7 @@ func BenchmarkReserveDelete(b *testing.B) {
 	}
 
 	for b.Loop() {
-		job, err := q.Reserve([]string{"bench"}, 1*time.Second)
+		job, err := q.Reserve([]string{"bench"}, TestTimeout(1*time.Second))
 		if err == nil {
 			_ = q.Delete(job.Meta.ID)
 		}
@@ -1220,7 +1220,7 @@ func TestAsyncPut(t *testing.T) {
 		}
 
 		// 等待异步存储完成
-		time.Sleep(500 * time.Millisecond)
+		TestSleep(500 * time.Millisecond)
 
 		// 验证所有任务都在队列中（使用 >= 因为可能有恢复的任务）
 		stats := q.Stats()
@@ -1229,7 +1229,7 @@ func TestAsyncPut(t *testing.T) {
 		}
 
 		// 验证可以 Reserve 任务
-		job, err := q.Reserve([]string{"test"}, 1*time.Second)
+		job, err := q.Reserve([]string{"test"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Errorf("Reserve failed: %v", err)
 		}
@@ -1362,7 +1362,7 @@ func TestReserve_TTRTimeout(t *testing.T) {
 		}
 
 		// Worker 1 获取任务但不处理
-		job1, err := q.Reserve([]string{"test"}, 1*time.Second)
+		job1, err := q.Reserve([]string{"test"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Fatalf("Reserve failed: %v", err)
 		}
@@ -1378,7 +1378,7 @@ func TestReserve_TTRTimeout(t *testing.T) {
 		}
 
 		// 等待 TTR 超时（100ms + 一些余量）
-		time.Sleep(200 * time.Millisecond)
+		TestSleep(200 * time.Millisecond)
 
 		// 验证任务已经自动转为 Ready
 		stats = q.Stats()
@@ -1390,7 +1390,7 @@ func TestReserve_TTRTimeout(t *testing.T) {
 		}
 
 		// Worker 2 应该能够重新获取这个任务
-		job2, err := q.Reserve([]string{"test"}, 1*time.Second)
+		job2, err := q.Reserve([]string{"test"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Fatalf("Second Reserve failed: %v", err)
 		}
@@ -1438,7 +1438,7 @@ func TestReserve_TTRTimeout_Multiple(t *testing.T) {
 		// Reserve 所有任务但不处理
 		jobs := make([]*Job, numJobs)
 		for i := range numJobs {
-			job, err := q.Reserve([]string{"test"}, 1*time.Second)
+			job, err := q.Reserve([]string{"test"}, TestTimeout(1*time.Second))
 			if err != nil {
 				t.Fatalf("Reserve %d failed: %v", i, err)
 			}
@@ -1452,7 +1452,7 @@ func TestReserve_TTRTimeout_Multiple(t *testing.T) {
 		}
 
 		// 等待所有任务 TTR 超时
-		time.Sleep(200 * time.Millisecond)
+		TestSleep(200 * time.Millisecond)
 
 		// 验证所有任务都转为 Ready
 		stats = q.Stats()
@@ -1465,7 +1465,7 @@ func TestReserve_TTRTimeout_Multiple(t *testing.T) {
 
 		// 验证可以重新获取所有任务
 		for i := range numJobs {
-			job, err := q.Reserve([]string{"test"}, 1*time.Second)
+			job, err := q.Reserve([]string{"test"}, TestTimeout(1*time.Second))
 			if err != nil {
 				t.Fatalf("Second Reserve %d failed: %v", i, err)
 			}
@@ -1543,7 +1543,7 @@ func TestQueue_BoundaryConditions(t *testing.T) {
 			}
 
 			// 应该能够 Reserve
-			job, err := q.Reserve([]string{"test-nil-body"}, 1*time.Second)
+			job, err := q.Reserve([]string{"test-nil-body"}, TestTimeout(1*time.Second))
 			if err != nil {
 				t.Fatalf("Reserve failed: %v", err)
 			}
@@ -1565,7 +1565,7 @@ func TestQueue_BoundaryConditions(t *testing.T) {
 				t.Fatalf("Put with empty body failed: %v", err)
 			}
 
-			job, err := q.Reserve([]string{"test-empty-body"}, 1*time.Second)
+			job, err := q.Reserve([]string{"test-empty-body"}, TestTimeout(1*time.Second))
 			if err != nil {
 				t.Fatalf("Reserve failed: %v", err)
 			}
@@ -1624,7 +1624,7 @@ func TestQueue_BoundaryConditions(t *testing.T) {
 			id2, _ := q.Put("test-priority", []byte("low"), 100, 0, 30*time.Second)
 
 			// 应该先获取优先级为 0 的任务
-			job, err := q.Reserve([]string{"test-priority"}, 1*time.Second)
+			job, err := q.Reserve([]string{"test-priority"}, TestTimeout(1*time.Second))
 			if err != nil {
 				t.Fatalf("Reserve failed: %v", err)
 			}
@@ -1645,7 +1645,7 @@ func TestQueue_BoundaryConditions(t *testing.T) {
 				t.Fatalf("Put with max priority failed: %v", err)
 			}
 
-			job, err := q.Reserve([]string{"test-max-priority"}, 1*time.Second)
+			job, err := q.Reserve([]string{"test-max-priority"}, TestTimeout(1*time.Second))
 			if err != nil {
 				t.Fatalf("Reserve failed: %v", err)
 			}
@@ -1858,12 +1858,12 @@ func TestQueue_StopResourceCleanup(t *testing.T) {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
-				_, errors[idx] = q.Reserve([]string{"test3"}, 10*time.Second)
+				_, errors[idx] = q.Reserve([]string{"test3"}, TestTimeout(10*time.Second))
 			}(i)
 		}
 
 		// 等待 waiters 进入等待状态
-		time.Sleep(100 * time.Millisecond)
+		TestSleep(100 * time.Millisecond)
 
 		// 停止队列
 		stopErr := q.Stop()
@@ -1906,12 +1906,12 @@ func TestQueue_StopWithPendingReserves(t *testing.T) {
 
 		for range numWaiters {
 			wg.Go(func() {
-				_, _ = q.Reserve([]string{"nonexistent"}, 30*time.Second)
+				_, _ = q.Reserve([]string{"nonexistent"}, TestTimeout(30*time.Second))
 			})
 		}
 
 		// 等待所有 Reserve 进入等待状态
-		time.Sleep(100 * time.Millisecond)
+		TestSleep(100 * time.Millisecond)
 
 		// Stop 应该快速取消所有 Reserve
 		stopErr := q.Stop()

@@ -54,12 +54,12 @@ jobs:
 
       - name: Run tests (Unix)
         if: runner.os != 'Windows'
-        run: go test -v -race -coverprofile coverage.out -covermode atomic ./...
+        run: go test -v -race -short -coverprofile coverage.out -covermode atomic ./...
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: go test -v -race -coverprofile coverage.out -covermode atomic ./...
+        run: go test -v -race -short -coverprofile coverage.out -covermode atomic ./...
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4

@@ -317,7 +317,7 @@ func TestJob_OperationMethods(t *testing.T) {
 	// 测试 Delete
 	t.Run("Delete", func(t *testing.T) {
 		id, _ := q.Put("test-delete", []byte("test delete"), 1, 0, 60*time.Second)
-		job, err := q.Reserve([]string{"test-delete"}, 1*time.Second)
+		job, err := q.Reserve([]string{"test-delete"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -336,7 +336,7 @@ func TestJob_OperationMethods(t *testing.T) {
 	// 测试 Release
 	t.Run("Release", func(t *testing.T) {
 		id, _ := q.Put("test-release", []byte("test release"), 1, 0, 60*time.Second)
-		job, err := q.Reserve([]string{"test-release"}, 1*time.Second)
+		job, err := q.Reserve([]string{"test-release"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -364,7 +364,7 @@ func TestJob_OperationMethods(t *testing.T) {
 	// 测试 Bury
 	t.Run("Bury", func(t *testing.T) {
 		id, _ := q.Put("test-bury", []byte("test bury"), 1, 0, 60*time.Second)
-		job, err := q.Reserve([]string{"test-bury"}, 1*time.Second)
+		job, err := q.Reserve([]string{"test-bury"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -392,7 +392,7 @@ func TestJob_OperationMethods(t *testing.T) {
 	// 测试 Kick
 	t.Run("Kick", func(t *testing.T) {
 		id, _ := q.Put("test-kick", []byte("test kick"), 1, 0, 60*time.Second)
-		job, err := q.Reserve([]string{"test-kick"}, 1*time.Second)
+		job, err := q.Reserve([]string{"test-kick"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -432,7 +432,7 @@ func TestJob_OperationMethods(t *testing.T) {
 	// 测试 Touch
 	t.Run("Touch", func(t *testing.T) {
 		_, _ = q.Put("test-touch", []byte("test touch"), 1, 0, 5*time.Second)
-		job, err := q.Reserve([]string{"test-touch"}, 1*time.Second)
+		job, err := q.Reserve([]string{"test-touch"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -440,7 +440,7 @@ func TestJob_OperationMethods(t *testing.T) {
 		oldDeadline := job.Meta.ReserveDeadline()
 
 		// 延长 TTR
-		time.Sleep(100 * time.Millisecond)
+		TestSleep(100 * time.Millisecond)
 		if err := job.Touch(10 * time.Second); err != nil {
 			t.Errorf("job.Touch() failed: %v", err)
 		}
@@ -652,7 +652,7 @@ func TestJob_ConcurrentOperations(t *testing.T) {
 					case 2:
 						// Touch
 						_ = job.Touch()
-						time.Sleep(10 * time.Millisecond)
+						TestSleep(10 * time.Millisecond)
 						_ = job.Delete()
 					case 3:
 						// Bury
@@ -693,7 +693,7 @@ func TestJob_ConcurrentTouch(t *testing.T) {
 
 		// 创建并 Reserve 一个任务
 		id, _ := q.Put("touch-test", []byte("data"), 1, 0, 60*time.Second)
-		job, err := q.Reserve([]string{"touch-test"}, 1*time.Second)
+		job, err := q.Reserve([]string{"touch-test"}, TestTimeout(1*time.Second))
 		if err != nil {
 			t.Fatalf("Reserve failed: %v", err)
 		}
@@ -711,7 +711,7 @@ func TestJob_ConcurrentTouch(t *testing.T) {
 				if err == nil {
 					successCount[idx] = 1
 				}
-				time.Sleep(time.Millisecond)
+				TestSleep(time.Millisecond)
 			}(i)
 		}
 

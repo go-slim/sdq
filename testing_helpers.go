@@ -3,11 +3,33 @@ package sdq
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3" // SQLite 驱动
 )
+
+// testTimeMultiplier returns a multiplier for test timing values.
+// On Windows, the timer resolution is ~15.6ms which requires longer delays.
+func testTimeMultiplier() int {
+	if runtime.GOOS == "windows" {
+		return 3 // 3x longer delays on Windows
+	}
+	return 1
+}
+
+// TestSleep sleeps for the given duration, scaled for the current OS.
+// On Windows, sleeps are 3x longer to account for timer resolution.
+func TestSleep(d time.Duration) {
+	time.Sleep(d * time.Duration(testTimeMultiplier()))
+}
+
+// TestTimeout returns the given duration scaled for the current OS.
+// On Windows, timeouts are 3x longer to account for timer resolution.
+func TestTimeout(d time.Duration) time.Duration {
+	return d * time.Duration(testTimeMultiplier())
+}
 
 // StorageType 定义存储类型
 type StorageType int
