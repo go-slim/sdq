@@ -43,6 +43,7 @@ func (h *Handler) registerRoutes() {
 	// HTML 页面
 	h.mux.HandleFunc("GET /", h.handleDashboard)
 	h.mux.HandleFunc("GET /topics/{topic}", h.handleTopicDetail)
+	h.mux.HandleFunc("GET /jobs/{id}", h.handleJobDetail)
 
 	// JSON API
 	h.mux.HandleFunc("GET /api/overview", h.handleAPIOverview)
@@ -117,6 +118,36 @@ func (h *Handler) handleTopicDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.renderHTML(w, topicDetailTemplate, data)
+}
+
+func (h *Handler) handleJobDetail(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "invalid job id", http.StatusBadRequest)
+		return
+	}
+
+	job, err := h.inspector.GetJob(r.Context(), id, true)
+	if err != nil {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+
+	// 获取 body 内容
+	body, _ := h.inspector.GetJobBody(r.Context(), id)
+	bodyStr := string(body)
+	if len(bodyStr) > 10000 {
+		bodyStr = bodyStr[:10000] + "\n... (truncated)"
+	}
+
+	data := map[string]any{
+		"Job":     job,
+		"Body":    bodyStr,
+		"BodyLen": len(body),
+	}
+
+	h.renderHTML(w, jobDetailTemplate, data)
 }
 
 // JSON API 处理器
@@ -558,7 +589,7 @@ var topicDetailTemplate = `<!DOCTYPE html>
                 <tbody>
                     {{range .Jobs}}
                     <tr>
-                        <td>{{.ID}}</td>
+                        <td><a href="/jobs/{{.ID}}">{{.ID}}</a></td>
                         <td><span class="state-badge state-{{.State}}">{{.State}}</span></td>
                         <td>{{.Priority}}</td>
                         <td>{{.Reserves}}</td>
@@ -650,6 +681,163 @@ var topicDetailTemplate = `<!DOCTYPE html>
 </body>
 </html>`
 
+var jobDetailTemplate = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Job {{.Job.ID}} - SDQ Inspector</title>
+    <style>` + cssStyles + `</style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><a href="/">SDQ Inspector</a> / <a href="/topics/{{.Job.Topic}}">{{.Job.Topic}}</a> / Job {{.Job.ID}}</h1>
+        </header>
+
+        <section class="overview">
+            <h2>Job Details</h2>
+            <div class="job-info">
+                <div class="info-row">
+                    <span class="info-label">ID</span>
+                    <span class="info-value">{{.Job.ID}}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Topic</span>
+                    <span class="info-value"><a href="/topics/{{.Job.Topic}}">{{.Job.Topic}}</a></span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">State</span>
+                    <span class="info-value"><span class="state-badge state-{{.Job.State}}">{{.Job.State}}</span></span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Priority</span>
+                    <span class="info-value">{{.Job.Priority}}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Delay</span>
+                    <span class="info-value">{{.Job.Delay}}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">TTR</span>
+                    <span class="info-value">{{.Job.TTR}}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Age</span>
+                    <span class="info-value">{{.Job.Age}}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Created At</span>
+                    <span class="info-value">{{formatTime .Job.CreatedAt}}</span>
+                </div>
+                {{if not .Job.ReadyAt.IsZero}}
+                <div class="info-row">
+                    <span class="info-label">Ready At</span>
+                    <span class="info-value">{{formatTime .Job.ReadyAt}}</span>
+                </div>
+                {{end}}
+                {{if not .Job.ReservedAt.IsZero}}
+                <div class="info-row">
+                    <span class="info-label">Reserved At</span>
+                    <span class="info-value">{{formatTime .Job.ReservedAt}}</span>
+                </div>
+                {{end}}
+                {{if not .Job.BuriedAt.IsZero}}
+                <div class="info-row">
+                    <span class="info-label">Buried At</span>
+                    <span class="info-value">{{formatTime .Job.BuriedAt}}</span>
+                </div>
+                {{end}}
+                {{if .Job.TimeUntilReady}}
+                <div class="info-row">
+                    <span class="info-label">Time Until Ready</span>
+                    <span class="info-value">{{.Job.TimeUntilReady}}</span>
+                </div>
+                {{end}}
+                {{if .Job.TimeUntilTimeout}}
+                <div class="info-row">
+                    <span class="info-label">Time Until Timeout</span>
+                    <span class="info-value">{{.Job.TimeUntilTimeout}}</span>
+                </div>
+                {{end}}
+            </div>
+        </section>
+
+        <section>
+            <h2>Statistics</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value">{{.Job.Reserves}}</div>
+                    <div class="stat-label">Reserves</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{.Job.Timeouts}}</div>
+                    <div class="stat-label">Timeouts</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{.Job.Releases}}</div>
+                    <div class="stat-label">Releases</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{.Job.Buries}}</div>
+                    <div class="stat-label">Buries</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{.Job.Kicks}}</div>
+                    <div class="stat-label">Kicks</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">{{.Job.Touches}}</div>
+                    <div class="stat-label">Touches</div>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>Body ({{.BodyLen}} bytes)</h2>
+            <pre class="job-body">{{.Body}}</pre>
+        </section>
+
+        <section>
+            <h2>Actions</h2>
+            <div class="actions">
+                {{if eq .Job.State "buried"}}
+                <button class="btn" onclick="kickJob()">Kick Job</button>
+                {{end}}
+                <button class="btn btn-danger" onclick="deleteJob()">Delete Job</button>
+            </div>
+        </section>
+    </div>
+
+    <script>
+    const jobId = {{.Job.ID}};
+
+    async function kickJob() {
+        try {
+            const resp = await fetch('/api/jobs/' + jobId + '/kick', {method: 'POST'});
+            if (!resp.ok) throw new Error('Failed to kick job');
+            alert('Job kicked successfully');
+            location.reload();
+        } catch (e) {
+            alert('Error: ' + e.message);
+        }
+    }
+
+    async function deleteJob() {
+        if (!confirm('Delete job ' + jobId + '? This cannot be undone!')) return;
+        try {
+            const resp = await fetch('/api/jobs/' + jobId, {method: 'DELETE'});
+            if (!resp.ok) throw new Error('Failed to delete job');
+            alert('Job deleted successfully');
+            window.location.href = '/';
+        } catch (e) {
+            alert('Error: ' + e.message);
+        }
+    }
+    </script>
+</body>
+</html>`
+
 var cssStyles = strings.ReplaceAll(`
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; line-height: 1.6; }
@@ -691,4 +879,9 @@ section h2 { font-size: 18px; margin-bottom: 15px; color: #1a1a1a; }
 .page-link:hover { background: #e9ecef; }
 .page-link.active { background: #0066cc; color: #fff; border-color: #0066cc; }
 .empty { color: #666; font-style: italic; }
+.job-info { display: grid; gap: 8px; }
+.info-row { display: flex; padding: 8px 0; border-bottom: 1px solid #eee; }
+.info-label { width: 150px; font-weight: 600; color: #666; font-size: 13px; }
+.info-value { flex: 1; }
+.job-body { background: #f8f9fa; padding: 15px; border-radius: 6px; overflow-x: auto; font-size: 13px; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto; }
 `, "\n", "")
