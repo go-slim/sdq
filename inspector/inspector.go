@@ -454,6 +454,16 @@ func (i *Inspector) KickAllBuriedJobs(ctx context.Context, topic string) (int, e
 	return kicked, nil
 }
 
+// KickJob 踢出单个已埋葬的任务
+func (i *Inspector) KickJob(id uint64) error {
+	return i.queue.KickJob(id)
+}
+
+// DeleteJob 删除单个任务
+func (i *Inspector) DeleteJob(id uint64) error {
+	return i.queue.Delete(id)
+}
+
 // ============================================================
 // 实时监控（用于 WebSocket 推送）
 // ============================================================
