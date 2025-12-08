@@ -45,9 +45,9 @@ func main() {
 		producers = flag.Int("producers", 4, "number of producers")
 		consumers = flag.Int("consumers", 4, "number of consumers")
 		topics    = flag.Int("topics", 10, "number of topics")
-		storage   = flag.String("storage", "memory", "storage type: memory, sqlite")
+		storage   = flag.String("storage", "sqlite", "storage type: memory, sqlite")
 		dbPath    = flag.String("db", "./stability.db", "sqlite database path (when storage=sqlite)")
-		ticker    = flag.String("ticker", "dynamic", "ticker type: dynamic, timewheel")
+		ticker    = flag.String("ticker", "timewheel", "ticker type: dynamic, timewheel")
 	)
 	flag.Parse()
 
