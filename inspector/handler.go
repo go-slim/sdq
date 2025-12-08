@@ -561,7 +561,7 @@ var topicDetailTemplate = `<!DOCTYPE html>
                         <td>{{.ID}}</td>
                         <td><span class="state-badge state-{{.State}}">{{.State}}</span></td>
                         <td>{{.Priority}}</td>
-                        <td>{{.ReserveCount}}</td>
+                        <td>{{.Reserves}}</td>
                         <td>{{formatTime .CreatedAt}}</td>
                         <td>
                             {{if eq .State "buried"}}
