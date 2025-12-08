@@ -6,7 +6,7 @@ import (
 )
 
 func TestNewTopic(t *testing.T) {
-	topic := newTopic("test")
+	topic := newTopic("test", nil)
 	if topic == nil {
 		t.Fatal("newTopic returned nil")
 	}
@@ -33,7 +33,7 @@ func TestNewTopic(t *testing.T) {
 }
 
 func TestTopicReadyOperations(t *testing.T) {
-	topic := newTopic("test")
+	topic := newTopic("test", nil)
 
 	// Push ready jobs with different priorities
 	meta1 := NewJobMeta(1, "test", 10, 0, 30*time.Second)
@@ -100,7 +100,7 @@ func TestTopicReadyOperations(t *testing.T) {
 }
 
 func TestTopicDelayedOperations(t *testing.T) {
-	topic := newTopic("test")
+	topic := newTopic("test", nil)
 	now := time.Now()
 
 	// Push delayed jobs with different ready times
@@ -151,7 +151,7 @@ func TestTopicDelayedOperations(t *testing.T) {
 }
 
 func TestTopicReservedOperations(t *testing.T) {
-	topic := newTopic("test")
+	topic := newTopic("test", nil)
 
 	meta1 := NewJobMeta(1, "test", 10, 0, 30*time.Second)
 	meta1.State = StateReserved
@@ -185,7 +185,7 @@ func TestTopicReservedOperations(t *testing.T) {
 }
 
 func TestTopicBuriedOperations(t *testing.T) {
-	topic := newTopic("test")
+	topic := newTopic("test", nil)
 
 	meta1 := NewJobMeta(1, "test", 10, 0, 30*time.Second)
 	meta1.State = StateBuried
@@ -223,7 +223,7 @@ func TestTopicBuriedOperations(t *testing.T) {
 }
 
 func TestTopicStats(t *testing.T) {
-	topic := newTopic("test")
+	topic := newTopic("test", nil)
 
 	// Add jobs to different queues
 	meta1 := NewJobMeta(1, "test", 10, 0, 30*time.Second)
@@ -270,7 +270,7 @@ func TestTopicStats(t *testing.T) {
 }
 
 func TestTopicProcessTick(t *testing.T) {
-	topic := newTopic("test")
+	topic := newTopic("test", nil)
 	now := time.Now()
 
 	// Add delayed job that should be ready
@@ -304,7 +304,7 @@ func TestTopicProcessTick(t *testing.T) {
 }
 
 func TestTopicNextTickTime(t *testing.T) {
-	topic := newTopic("test")
+	topic := newTopic("test", nil)
 	now := time.Now()
 
 	// Empty topic should return zero time
@@ -339,7 +339,7 @@ func TestTopicNextTickTime(t *testing.T) {
 }
 
 func TestTopicNeedsTick(t *testing.T) {
-	topic := newTopic("test")
+	topic := newTopic("test", nil)
 
 	// Empty topic doesn't need tick
 	if topic.NeedsTick() {
@@ -377,7 +377,7 @@ func TestTopicNeedsTick(t *testing.T) {
 }
 
 func TestTopicProcessDelayed(t *testing.T) {
-	topic := newTopic("test")
+	topic := newTopic("test", nil)
 	now := time.Now()
 
 	// Add multiple delayed jobs, some ready, some not
@@ -410,7 +410,7 @@ func TestTopicProcessDelayed(t *testing.T) {
 }
 
 func TestTopicProcessReservedTimeout(t *testing.T) {
-	topic := newTopic("test")
+	topic := newTopic("test", nil)
 	now := time.Now()
 
 	// Add reserved jobs, some timeout, some not
@@ -453,7 +453,7 @@ func TestTopicProcessReservedTimeout(t *testing.T) {
 }
 
 func TestJobMetaHeapFIFO(t *testing.T) {
-	topic := newTopic("test")
+	topic := newTopic("test", nil)
 
 	// Add jobs with same priority
 	meta1 := NewJobMeta(1, "test", 10, 0, 30*time.Second)

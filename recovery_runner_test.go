@@ -425,7 +425,7 @@ func TestRecoveryResultApply(t *testing.T) {
 		// Apply to TopicHub
 		config := DefaultConfig()
 		ticker := NewNoOpTicker() // 使用 NoOpTicker 避免死锁
-		hub := newTopicHub(&config, testStorage.Storage, ticker)
+		hub := newTopicHub(&config, testStorage.Storage, ticker, nil)
 
 		err = hub.ApplyRecovery(result)
 		if err != nil {

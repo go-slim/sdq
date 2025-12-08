@@ -14,13 +14,14 @@ type TopicHub struct {
 	topics        map[string]*topic
 	topicWrappers map[string]*topicWrapper
 
-	config  *Config
-	storage Storage
-	ticker  Ticker
+	config     *Config
+	storage    Storage
+	ticker     Ticker
+	queueStats *QueueStats
 }
 
 // newTopicHub 创建新的 TopicHub
-func newTopicHub(config *Config, storage Storage, ticker Ticker) *TopicHub {
+func newTopicHub(config *Config, storage Storage, ticker Ticker, queueStats *QueueStats) *TopicHub {
 	// 如果 storage 为 nil，使用 MemoryStorage（主要用于测试）
 	if storage == nil {
 		storage = NewMemoryStorage()
@@ -32,6 +33,7 @@ func newTopicHub(config *Config, storage Storage, ticker Ticker) *TopicHub {
 		config:        config,
 		storage:       storage,
 		ticker:        ticker,
+		queueStats:    queueStats,
 	}
 }
 
@@ -46,7 +48,7 @@ func (h *TopicHub) GetOrCreateTopic(name string) (*topic, error) {
 		return nil, ErrMaxTopicsReached
 	}
 
-	t := newTopic(name)
+	t := newTopic(name, h.queueStats)
 	h.topics[name] = t
 	return t, nil
 }

@@ -16,6 +16,9 @@ type topic struct {
 	delayed  *delayedJobHeap     // 延迟任务优先级队列（按 ReadyAt 排序）
 	reserved map[uint64]*JobMeta // 保留任务映射（ID -> Meta）
 	buried   *jobMetaHeap        // 埋葬任务优先级队列（按 Priority 排序）
+
+	// 统计（可选，用于记录超时等事件）
+	queueStats *QueueStats
 }
 
 // topicWrapper wraps a topic and provides Tickable interface
@@ -40,13 +43,14 @@ func (w *topicWrapper) NeedsTick() bool {
 }
 
 // newTopic 创建新的 topic
-func newTopic(name string) *topic {
+func newTopic(name string, queueStats *QueueStats) *topic {
 	return &topic{
-		name:     name,
-		ready:    newJobMetaHeap(),
-		delayed:  newDelayedJobHeap(),
-		reserved: make(map[uint64]*JobMeta),
-		buried:   newJobMetaHeap(),
+		name:       name,
+		ready:      newJobMetaHeap(),
+		delayed:    newDelayedJobHeap(),
+		reserved:   make(map[uint64]*JobMeta),
+		buried:     newJobMetaHeap(),
+		queueStats: queueStats,
 	}
 }
 
@@ -293,6 +297,11 @@ func (t *topic) processReservedTimeout(now time.Time) {
 			meta.ReservedAt = time.Time{}
 			meta.ReadyAt = now
 			heap.Push(t.ready, meta)
+
+			// 记录超时统计
+			if t.queueStats != nil {
+				t.queueStats.RecordTimeout()
+			}
 		}
 	}
 }

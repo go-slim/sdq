@@ -30,7 +30,7 @@ func TestNewTopicHub(t *testing.T) {
 		config := DefaultConfig()
 		ticker := newNoopTicker()
 
-		hub := newTopicHub(&config, testStorage.Storage, ticker)
+		hub := newTopicHub(&config, testStorage.Storage, ticker, nil)
 		if hub == nil {
 			t.Fatal("newTopicHub returned nil")
 		}
@@ -49,7 +49,7 @@ func TestTopicHubGetOrCreateTopic(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Create new topic
 	hub.Lock()
@@ -87,7 +87,7 @@ func TestTopicHubMaxTopics(t *testing.T) {
 	config.MaxTopics = 2
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Create topics up to limit
 	hub.Lock()
@@ -117,7 +117,7 @@ func TestTopicHubGetTopic(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Get non-existent topic
 	hub.Lock()
@@ -143,7 +143,7 @@ func TestTopicHubListTopics(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Empty hub
 	topics := hub.ListTopics()
@@ -173,7 +173,7 @@ func TestTopicHubTopicStats(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Non-existent topic
 	stats := hub.TopicStats("test")
@@ -203,7 +203,7 @@ func TestTopicHubAllTopicStats(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Empty hub
 	allStats := hub.AllTopicStats()
@@ -234,7 +234,7 @@ func TestTopicHubTotalJobs(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Empty hub
 	total := hub.TotalJobs()
@@ -261,7 +261,7 @@ func TestTopicHubValidateTopicName(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	tests := []struct {
 		name    string
@@ -290,7 +290,7 @@ func TestTopicHubPut(t *testing.T) {
 		config := DefaultConfig()
 		ticker := newNoopTicker()
 
-		hub := newTopicHub(&config, testStorage.Storage, ticker)
+		hub := newTopicHub(&config, testStorage.Storage, ticker, nil)
 
 		// Put ready job
 		meta := NewJobMeta(1, "test", 10, 0, 30*time.Second)
@@ -322,7 +322,7 @@ func TestTopicHubPutMaxJobs(t *testing.T) {
 	config.MaxJobsPerTopic = 2
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Add jobs up to limit
 	meta1 := NewJobMeta(1, "test", 10, 0, 30*time.Second)
@@ -344,7 +344,7 @@ func TestTopicHubTryReserve(t *testing.T) {
 		config := DefaultConfig()
 		ticker := newNoopTicker()
 
-		hub := newTopicHub(&config, testStorage.Storage, ticker)
+		hub := newTopicHub(&config, testStorage.Storage, ticker, nil)
 
 		// No jobs
 		meta := hub.TryReserve([]string{"test"})
@@ -381,7 +381,7 @@ func TestTopicHubDelete(t *testing.T) {
 		config := DefaultConfig()
 		ticker := newNoopTicker()
 
-		hub := newTopicHub(&config, testStorage.Storage, ticker)
+		hub := newTopicHub(&config, testStorage.Storage, ticker, nil)
 
 		// Add and reserve job
 		hub.Lock()
@@ -415,7 +415,7 @@ func TestTopicHubDeleteNotReserved(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Add ready job (not reserved)
 	hub.Lock()
@@ -437,7 +437,7 @@ func TestTopicHubRelease(t *testing.T) {
 		config := DefaultConfig()
 		ticker := newNoopTicker()
 
-		hub := newTopicHub(&config, testStorage.Storage, ticker)
+		hub := newTopicHub(&config, testStorage.Storage, ticker, nil)
 
 		// Add reserved job
 		hub.Lock()
@@ -480,7 +480,7 @@ func TestTopicHubReleaseWithDelay(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Add reserved job
 	hub.Lock()
@@ -514,7 +514,7 @@ func TestTopicHubBury(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Add reserved job
 	hub.Lock()
@@ -552,7 +552,7 @@ func TestTopicHubKick(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Add buried jobs
 	hub.Lock()
@@ -593,7 +593,7 @@ func TestTopicHubKickJob(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Add buried job
 	hub.Lock()
@@ -631,7 +631,7 @@ func TestTopicHubFindJob(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Add jobs in different states
 	hub.Lock()
@@ -687,7 +687,7 @@ func TestTopicHubCleanupEmptyTopics(t *testing.T) {
 	config := DefaultConfig()
 	ticker := newNoopTicker()
 
-	hub := newTopicHub(&config, nil, ticker)
+	hub := newTopicHub(&config, nil, ticker, nil)
 
 	// Add topics
 	hub.Lock()

@@ -80,6 +80,9 @@ type Queue struct {
 
 	// 启动时间（用于 Inspector）
 	startedAt time.Time
+
+	// 操作统计（用于 Prometheus metrics）
+	queueStats *QueueStats
 }
 
 // New 创建新的 Queue 实例
@@ -107,6 +110,7 @@ func New(config Config) (*Queue, error) {
 		logger:       logger,
 		reserveMgr:   newReserveManager(ctx),
 		recoveryDone: make(chan struct{}),
+		queueStats:   newQueueStats(),
 	}
 
 	// 创建 Ticker
@@ -147,7 +151,7 @@ func New(config Config) (*Queue, error) {
 	q.nextID.Store(1)
 
 	// 创建管理器
-	q.topicHub = newTopicHub(&q.config, q.storage, q.ticker)
+	q.topicHub = newTopicHub(&q.config, q.storage, q.ticker, q.queueStats)
 	// reserveMgr 已在上面创建
 	// recoveryRunner 按需创建（在 Start 中）
 
@@ -404,7 +408,10 @@ func (q *Queue) Put(topic string, body []byte, priority uint32, delay, ttr time.
 		return 0, err
 	}
 
-	// 7. 通知等待队列
+	// 7. 记录统计
+	q.queueStats.RecordPut()
+
+	// 8. 通知等待队列
 	if needsNotify {
 		q.notifyWaiters(topic)
 	}
@@ -423,6 +430,7 @@ func (q *Queue) Delete(id uint64) error {
 		)
 		return err
 	}
+	q.queueStats.RecordDelete()
 	return nil
 }
 
@@ -446,6 +454,8 @@ func (q *Queue) Release(id uint64, priority uint32, delay time.Duration) error {
 		return err
 	}
 
+	q.queueStats.RecordRelease()
+
 	if needsNotify {
 		q.notifyWaiters(topicName)
 	}
@@ -468,6 +478,7 @@ func (q *Queue) Bury(id uint64, priority uint32) error {
 		)
 		return err
 	}
+	q.queueStats.RecordBury()
 	return nil
 }
 
@@ -497,6 +508,8 @@ func (q *Queue) Kick(topic string, bound int) (int, error) {
 		return 0, err
 	}
 
+	q.queueStats.RecordKick(kicked)
+
 	if needsNotify {
 		q.notifyWaiters(topic)
 	}
@@ -521,6 +534,7 @@ func (q *Queue) KickJob(id uint64) error {
 		return err
 	}
 
+	q.queueStats.RecordKick(1)
 	q.notifyWaiters(topicName)
 	return nil
 }
@@ -543,6 +557,8 @@ func (q *Queue) Touch(id uint64, duration ...time.Duration) error {
 		)
 		return err
 	}
+
+	q.queueStats.RecordTouch()
 
 	// 通知 Ticker 重新计算
 	q.ticker.Wakeup()
@@ -764,6 +780,8 @@ func (q *Queue) Reserve(topics []string, timeout time.Duration) (*Job, error) {
 		return nil, err
 	}
 
+	q.queueStats.RecordReserve()
+
 	q.logger.Debug("reserved job",
 		slog.Uint64("id", job.Meta.ID),
 		slog.String("topic", job.Meta.Topic),
@@ -836,4 +854,9 @@ func (q *Queue) AllTopicStats() []*TopicStats {
 // Storage 返回存储后端（只读访问）
 func (q *Queue) Storage() Storage {
 	return q.storage
+}
+
+// QueueStats 返回队列操作统计
+func (q *Queue) QueueStats() *QueueStats {
+	return q.queueStats
 }
