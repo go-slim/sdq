@@ -7,8 +7,10 @@
 //	go run ./examples/stability -duration 24h -addr :9090
 //	go run ./examples/stability -storage sqlite -db ./test.db
 //	go run ./examples/stability -ticker timewheel
+//	go run ./examples/stability -metrics  # 启用 Prometheus metrics
 //
 // 然后在浏览器中访问 http://localhost:8686 查看监控仪表盘
+// 如果启用了 -metrics，可以访问 http://localhost:8686/metrics 获取 Prometheus 指标
 package main
 
 import (
@@ -27,9 +29,12 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3" // SQLite driver
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"go-slim.dev/sdq"
 	"go-slim.dev/sdq/inspector"
+	"go-slim.dev/sdq/metrics"
 )
 
 // JobPayload 模拟任务数据
@@ -42,14 +47,15 @@ type JobPayload struct {
 
 func main() {
 	var (
-		duration  = flag.Duration("duration", 5*time.Minute, "test duration")
-		addr      = flag.String("addr", ":8686", "inspector HTTP address")
-		producers = flag.Int("producers", 4, "number of producers")
-		consumers = flag.Int("consumers", 4, "number of consumers")
-		topics    = flag.Int("topics", 10, "number of topics")
-		storage   = flag.String("storage", "sqlite", "storage type: memory, sqlite")
-		dbPath    = flag.String("db", "./stability.db", "sqlite database path (when storage=sqlite)")
-		ticker    = flag.String("ticker", "timewheel", "ticker type: dynamic, timewheel")
+		duration      = flag.Duration("duration", 5*time.Minute, "test duration")
+		addr          = flag.String("addr", ":8686", "inspector HTTP address")
+		producers     = flag.Int("producers", 4, "number of producers")
+		consumers     = flag.Int("consumers", 4, "number of consumers")
+		topics        = flag.Int("topics", 10, "number of topics")
+		storage       = flag.String("storage", "sqlite", "storage type: memory, sqlite")
+		dbPath        = flag.String("db", "./stability.db", "sqlite database path (when storage=sqlite)")
+		ticker        = flag.String("ticker", "timewheel", "ticker type: dynamic, timewheel")
+		enableMetrics = flag.Bool("metrics", false, "enable Prometheus metrics at /metrics endpoint")
 	)
 	flag.Parse()
 
@@ -58,6 +64,7 @@ func main() {
 		slog.String("inspector", "http://localhost"+*addr),
 		slog.String("storage", *storage),
 		slog.String("ticker", *ticker),
+		slog.Bool("metrics", *enableMetrics),
 	)
 
 	// 创建队列配置
@@ -106,10 +113,20 @@ func main() {
 
 	// 启动 Inspector HTTP 服务器
 	insp := inspector.New(q)
-	handler := inspector.NewHandler(insp)
+	mux := http.NewServeMux()
+	mux.Handle("/", inspector.NewHandler(insp))
+
+	// 注册 Prometheus metrics
+	if *enableMetrics {
+		collector := metrics.NewCollector(q)
+		prometheus.MustRegister(collector)
+		mux.Handle("/metrics", promhttp.Handler())
+		slog.Info("prometheus metrics enabled", slog.String("endpoint", "http://localhost"+*addr+"/metrics"))
+	}
+
 	server := &http.Server{
 		Addr:    *addr,
-		Handler: handler,
+		Handler: mux,
 	}
 	go func() {
 		slog.Info("inspector dashboard available", slog.String("url", "http://localhost"+*addr))
@@ -185,9 +202,7 @@ func main() {
 	}
 
 	// 延迟任务生产者
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 
@@ -217,12 +232,10 @@ func main() {
 				}
 			}
 		}
-	}()
+	})
 
 	// 长时间运行任务生产者（模拟需要较长 TTR 的任务）
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 
@@ -251,7 +264,7 @@ func main() {
 				}
 			}
 		}
-	}()
+	})
 
 	// 普通消费者
 	topicList := make([]string, *topics)
@@ -260,9 +273,7 @@ func main() {
 	}
 
 	for i := 0; i < *consumers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for {
 				select {
 				case <-ctx.Done():
@@ -277,14 +288,12 @@ func main() {
 					}
 				}
 			}
-		}()
+		})
 	}
 
 	// 延迟任务消费者
 	delayedTopics := []string{"delayed-topic-0", "delayed-topic-1", "delayed-topic-2"}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-ctx.Done():
@@ -301,12 +310,10 @@ func main() {
 				}
 			}
 		}
-	}()
+	})
 
 	// 长时间运行任务消费者
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-ctx.Done():
@@ -349,12 +356,10 @@ func main() {
 				}
 			}
 		}
-	}()
+	})
 
 	// 启动状态报告
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 
@@ -386,7 +391,7 @@ func main() {
 				)
 			}
 		}
-	}()
+	})
 
 	// 等待完成
 	wg.Wait()
