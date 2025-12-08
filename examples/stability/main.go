@@ -11,9 +11,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +27,14 @@ import (
 	"go-slim.dev/sdq"
 	"go-slim.dev/sdq/inspector"
 )
+
+// JobPayload 模拟任务数据
+type JobPayload struct {
+	ID        string    `json:"id"`
+	Type      string    `json:"type"`
+	CreatedAt time.Time `json:"created_at"`
+	Data      string    `json:"data"`
+}
 
 func main() {
 	var (
@@ -84,10 +94,12 @@ func main() {
 
 	// 统计
 	var (
-		putCount     atomic.Uint64
-		reserveCount atomic.Uint64
-		deleteCount  atomic.Uint64
-		errorCount   atomic.Uint64
+		putCount      atomic.Uint64
+		delayedCount  atomic.Uint64
+		reserveCount  atomic.Uint64
+		deleteCount   atomic.Uint64
+		errorCount    atomic.Uint64
+		longTaskCount atomic.Uint64
 	)
 
 	// 背压控制
@@ -96,13 +108,12 @@ func main() {
 	// 启动生产者和消费者
 	var wg sync.WaitGroup
 
-	// 生产者
+	// 普通任务生产者
 	for i := 0; i < *producers; i++ {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
 			topic := fmt.Sprintf("topic-%d", id%*topics)
-			body := []byte("stability test payload")
 
 			for {
 				select {
@@ -115,6 +126,14 @@ func main() {
 						continue
 					}
 
+					payload := JobPayload{
+						ID:        fmt.Sprintf("job-%d-%d", id, putCount.Load()),
+						Type:      "normal",
+						CreatedAt: time.Now(),
+						Data:      fmt.Sprintf("Normal task from producer %d", id),
+					}
+					body, _ := json.Marshal(payload)
+
 					_, err := q.Put(topic, body, 1, 0, 30*time.Second)
 					if err != nil {
 						errorCount.Add(1)
@@ -126,7 +145,76 @@ func main() {
 		}(i)
 	}
 
-	// 消费者
+	// 延迟任务生产者
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// 随机延迟 1-30 秒
+				delay := time.Duration(1+rand.Intn(30)) * time.Second
+				topic := fmt.Sprintf("delayed-topic-%d", rand.Intn(3))
+
+				payload := JobPayload{
+					ID:        fmt.Sprintf("delayed-%d", delayedCount.Load()),
+					Type:      "delayed",
+					CreatedAt: time.Now(),
+					Data:      fmt.Sprintf("Delayed task, will be ready in %v", delay),
+				}
+				body, _ := json.Marshal(payload)
+
+				_, err := q.Put(topic, body, 1, delay, 60*time.Second)
+				if err != nil {
+					errorCount.Add(1)
+				} else {
+					delayedCount.Add(1)
+					putCount.Add(1)
+				}
+			}
+		}
+	}()
+
+	// 长时间运行任务生产者（模拟需要较长 TTR 的任务）
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				topic := "long-running"
+
+				payload := JobPayload{
+					ID:        fmt.Sprintf("long-%d", longTaskCount.Load()),
+					Type:      "long-running",
+					CreatedAt: time.Now(),
+					Data:      "This task simulates a long-running job that takes 5-15 seconds to process",
+				}
+				body, _ := json.Marshal(payload)
+
+				// 长 TTR（2 分钟）
+				_, err := q.Put(topic, body, 2, 0, 2*time.Minute)
+				if err != nil {
+					errorCount.Add(1)
+				} else {
+					longTaskCount.Add(1)
+					putCount.Add(1)
+				}
+			}
+		}
+	}()
+
+	// 普通消费者
 	topicList := make([]string, *topics)
 	for i := range topicList {
 		topicList[i] = fmt.Sprintf("topic-%d", i)
@@ -153,6 +241,77 @@ func main() {
 		}()
 	}
 
+	// 延迟任务消费者
+	delayedTopics := []string{"delayed-topic-0", "delayed-topic-1", "delayed-topic-2"}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				job, err := q.Reserve(delayedTopics, 100*time.Millisecond)
+				if err == nil {
+					reserveCount.Add(1)
+					// 模拟处理延迟任务
+					time.Sleep(50 * time.Millisecond)
+					if err := job.Delete(); err == nil {
+						deleteCount.Add(1)
+					}
+				}
+			}
+		}
+	}()
+
+	// 长时间运行任务消费者
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				job, err := q.Reserve([]string{"long-running"}, 100*time.Millisecond)
+				if err == nil {
+					reserveCount.Add(1)
+
+					// 模拟长时间处理（5-15秒）
+					processingTime := time.Duration(5+rand.Intn(10)) * time.Second
+
+					// 在处理过程中定期 touch 以延长 TTR
+					done := make(chan struct{})
+					go func() {
+						touchTicker := time.NewTicker(30 * time.Second)
+						defer touchTicker.Stop()
+						for {
+							select {
+							case <-done:
+								return
+							case <-touchTicker.C:
+								_ = job.Touch()
+							}
+						}
+					}()
+
+					// 模拟处理
+					select {
+					case <-ctx.Done():
+						close(done)
+						return
+					case <-time.After(processingTime):
+					}
+					close(done)
+
+					if err := job.Delete(); err == nil {
+						deleteCount.Add(1)
+					}
+				}
+			}
+		}
+	}()
+
 	// 启动状态报告
 	wg.Add(1)
 	go func() {
@@ -168,6 +327,8 @@ func main() {
 			case <-ticker.C:
 				elapsed := time.Since(start)
 				puts := putCount.Load()
+				delayed := delayedCount.Load()
+				longTasks := longTaskCount.Load()
 				reserves := reserveCount.Load()
 				deletes := deleteCount.Load()
 				errors := errorCount.Load()
@@ -176,6 +337,8 @@ func main() {
 				slog.Info("progress",
 					slog.Duration("elapsed", elapsed.Round(time.Second)),
 					slog.Uint64("puts", puts),
+					slog.Uint64("delayed", delayed),
+					slog.Uint64("long_tasks", longTasks),
 					slog.Uint64("reserves", reserves),
 					slog.Uint64("deletes", deletes),
 					slog.Uint64("pending", pending),
@@ -192,6 +355,8 @@ func main() {
 	// 最终统计
 	slog.Info("test completed",
 		slog.Uint64("total_puts", putCount.Load()),
+		slog.Uint64("total_delayed", delayedCount.Load()),
+		slog.Uint64("total_long_tasks", longTaskCount.Load()),
 		slog.Uint64("total_reserves", reserveCount.Load()),
 		slog.Uint64("total_deletes", deleteCount.Load()),
 		slog.Uint64("total_errors", errorCount.Load()),
