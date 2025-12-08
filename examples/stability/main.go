@@ -26,6 +26,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3" // SQLite driver
+
 	"go-slim.dev/sdq"
 	"go-slim.dev/sdq/inspector"
 )
