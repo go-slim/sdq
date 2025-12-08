@@ -5,6 +5,8 @@
 //	go run ./examples/stability
 //	go run ./examples/stability -duration 1h
 //	go run ./examples/stability -duration 24h -addr :9090
+//	go run ./examples/stability -storage sqlite -db ./test.db
+//	go run ./examples/stability -ticker timewheel
 //
 // 然后在浏览器中访问 http://localhost:8686 查看监控仪表盘
 package main
@@ -43,17 +45,52 @@ func main() {
 		producers = flag.Int("producers", 4, "number of producers")
 		consumers = flag.Int("consumers", 4, "number of consumers")
 		topics    = flag.Int("topics", 10, "number of topics")
+		storage   = flag.String("storage", "memory", "storage type: memory, sqlite")
+		dbPath    = flag.String("db", "./stability.db", "sqlite database path (when storage=sqlite)")
+		ticker    = flag.String("ticker", "dynamic", "ticker type: dynamic, timewheel")
 	)
 	flag.Parse()
 
 	slog.Info("starting stability test",
 		slog.Duration("duration", *duration),
 		slog.String("inspector", "http://localhost"+*addr),
+		slog.String("storage", *storage),
+		slog.String("ticker", *ticker),
 	)
 
-	// 创建队列
+	// 创建队列配置
 	config := sdq.DefaultConfig()
-	config.Storage = sdq.NewMemoryStorage()
+
+	// 配置 Storage
+	switch *storage {
+	case "memory":
+		config.Storage = sdq.NewMemoryStorage()
+		slog.Info("using memory storage")
+	case "sqlite":
+		sqliteStorage, err := sdq.NewSQLiteStorage(*dbPath)
+		if err != nil {
+			slog.Error("failed to create sqlite storage", slog.Any("error", err))
+			os.Exit(1)
+		}
+		config.Storage = sqliteStorage
+		slog.Info("using sqlite storage", slog.String("path", *dbPath))
+	default:
+		slog.Error("unknown storage type", slog.String("storage", *storage))
+		os.Exit(1)
+	}
+
+	// 配置 Ticker
+	switch *ticker {
+	case "dynamic":
+		config.Ticker = sdq.NewDynamicSleepTicker(100*time.Millisecond, 5*time.Second)
+		slog.Info("using dynamic ticker", slog.Duration("min", 100*time.Millisecond), slog.Duration("max", 5*time.Second))
+	case "timewheel":
+		config.Ticker = sdq.NewTimeWheelTicker(100*time.Millisecond, 3600)
+		slog.Info("using timewheel ticker", slog.Duration("interval", 100*time.Millisecond), slog.Int("slots", 3600))
+	default:
+		slog.Error("unknown ticker type", slog.String("ticker", *ticker))
+		os.Exit(1)
+	}
 
 	q, err := sdq.New(config)
 	if err != nil {
