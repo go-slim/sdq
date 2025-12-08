@@ -418,6 +418,19 @@ var dashboardTemplate = `<!DOCTYPE html>
         <header>
             <h1>SDQ Inspector</h1>
             <p class="subtitle">Queue Monitoring Dashboard</p>
+            <div class="auto-refresh">
+                <label>
+                    <input type="checkbox" id="autoRefresh"> Auto Refresh
+                </label>
+                <select id="refreshInterval">
+                    <option value="1000">1s</option>
+                    <option value="2000">2s</option>
+                    <option value="5000" selected>5s</option>
+                    <option value="10000">10s</option>
+                    <option value="30000">30s</option>
+                </select>
+                <span id="refreshStatus"></span>
+            </div>
         </header>
 
         <section class="overview">
@@ -512,6 +525,57 @@ var dashboardTemplate = `<!DOCTYPE html>
         } catch (e) {
             alert('Error: ' + e.message);
         }
+    }
+
+    // Auto refresh
+    let refreshTimer = null;
+    const autoRefreshCheckbox = document.getElementById('autoRefresh');
+    const refreshIntervalSelect = document.getElementById('refreshInterval');
+    const refreshStatus = document.getElementById('refreshStatus');
+
+    function startAutoRefresh() {
+        const interval = parseInt(refreshIntervalSelect.value);
+        refreshTimer = setInterval(() => {
+            refreshStatus.textContent = 'Refreshing...';
+            location.reload();
+        }, interval);
+        refreshStatus.textContent = 'On';
+        localStorage.setItem('sdq-auto-refresh', 'true');
+        localStorage.setItem('sdq-refresh-interval', refreshIntervalSelect.value);
+    }
+
+    function stopAutoRefresh() {
+        if (refreshTimer) {
+            clearInterval(refreshTimer);
+            refreshTimer = null;
+        }
+        refreshStatus.textContent = '';
+        localStorage.setItem('sdq-auto-refresh', 'false');
+    }
+
+    autoRefreshCheckbox.addEventListener('change', function() {
+        if (this.checked) {
+            startAutoRefresh();
+        } else {
+            stopAutoRefresh();
+        }
+    });
+
+    refreshIntervalSelect.addEventListener('change', function() {
+        if (autoRefreshCheckbox.checked) {
+            stopAutoRefresh();
+            startAutoRefresh();
+        }
+        localStorage.setItem('sdq-refresh-interval', this.value);
+    });
+
+    // Restore state from localStorage
+    if (localStorage.getItem('sdq-refresh-interval')) {
+        refreshIntervalSelect.value = localStorage.getItem('sdq-refresh-interval');
+    }
+    if (localStorage.getItem('sdq-auto-refresh') === 'true') {
+        autoRefreshCheckbox.checked = true;
+        startAutoRefresh();
     }
     </script>
 </body>
@@ -884,4 +948,8 @@ section h2 { font-size: 18px; margin-bottom: 15px; color: #1a1a1a; }
 .info-label { width: 150px; font-weight: 600; color: #666; font-size: 13px; }
 .info-value { flex: 1; }
 .job-body { background: #f8f9fa; padding: 15px; border-radius: 6px; overflow-x: auto; font-size: 13px; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto; }
+.auto-refresh { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; }
+.auto-refresh label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.auto-refresh select { padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+#refreshStatus { color: #28a745; font-weight: 500; }
 `, "\n", "")
