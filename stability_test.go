@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,8 +17,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"go-slim.dev/sdq/inspector"
 )
 
 // ============================================================
@@ -573,25 +570,6 @@ func TestStability_LongRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = q.Stop() }()
-
-	// 启动 Inspector HTTP 服务器
-	insp := inspector.New(q)
-	handler := inspector.NewHandler(insp)
-	server := &http.Server{
-		Addr:    ":8686",
-		Handler: handler,
-	}
-	go func() {
-		t.Logf("Inspector dashboard available at http://localhost:8686")
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			t.Logf("Inspector server error: %v", err)
-		}
-	}()
-	defer func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		_ = server.Shutdown(shutdownCtx)
-	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
