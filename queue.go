@@ -77,6 +77,9 @@ type Queue struct {
 	// 恢复完成通知（用于等待异步恢复）
 	recoveryDone chan struct{}
 	recoveryOnce sync.Once
+
+	// 启动时间（用于 Inspector）
+	startedAt time.Time
 }
 
 // New 创建新的 Queue 实例
@@ -166,6 +169,7 @@ func (q *Queue) Start() error {
 
 // StartWithOptions 使用选项启动 Queue
 func (q *Queue) StartWithOptions(opts StartOptions) error {
+	q.startedAt = time.Now()
 	q.logger.Info("starting queue",
 		slog.Bool("topic_cleanup_enabled", q.config.EnableTopicCleanup),
 	)
@@ -813,4 +817,23 @@ func (q *Queue) StatsWaiting() []WaitingStats {
 	}
 
 	return stats
+}
+
+// ============================================================
+// Inspector 辅助方法（供 inspector 子包使用）
+// ============================================================
+
+// StartedAt 返回队列启动时间
+func (q *Queue) StartedAt() time.Time {
+	return q.startedAt
+}
+
+// AllTopicStats 返回所有 Topic 的统计信息
+func (q *Queue) AllTopicStats() []*TopicStats {
+	return q.topicHub.AllTopicStats()
+}
+
+// Storage 返回存储后端（只读访问）
+func (q *Queue) Storage() Storage {
+	return q.storage
 }
