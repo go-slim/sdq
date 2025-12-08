@@ -557,7 +557,22 @@ func TestStability_LongRunning(t *testing.T) {
 		duration = d
 	}
 
-	t.Logf("Starting %v stability test", duration)
+	// 阶段性报告间隔（默认每小时）
+	reportInterval := 1 * time.Hour
+	if duration < 1*time.Hour {
+		reportInterval = duration / 5 // 短测试分 5 个阶段报告
+		if reportInterval < 1*time.Minute {
+			reportInterval = 1 * time.Minute
+		}
+	}
+
+	// 硬超时保护：比预期时长多 10%，防止无限运行
+	hardTimeout := duration + duration/10
+	if hardTimeout < duration+5*time.Minute {
+		hardTimeout = duration + 5*time.Minute
+	}
+
+	t.Logf("Starting %v stability test (hard timeout: %v, report interval: %v)", duration, hardTimeout, reportInterval)
 
 	config := DefaultConfig()
 	config.Storage = NewMemoryStorage()
@@ -571,8 +586,12 @@ func TestStability_LongRunning(t *testing.T) {
 	}
 	defer func() { _ = q.Stop() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	// 使用硬超时作为上下文超时
+	ctx, cancel := context.WithTimeout(context.Background(), hardTimeout)
 	defer cancel()
+
+	// 单独的测试结束时间点
+	testEndTime := time.Now().Add(duration)
 
 	var (
 		putCount     atomic.Uint64
@@ -582,9 +601,75 @@ func TestStability_LongRunning(t *testing.T) {
 	)
 
 	// 记录初始内存
+	startTime := time.Now()
 	initialMem := collectMemSnapshot()
+	var memSnapshotsMu sync.Mutex
 	var memSnapshots []MemSnapshot
 	memSnapshots = append(memSnapshots, initialMem)
+
+	// 阶段性报告保存函数
+	saveInterimReport := func(phase string) {
+		memSnapshotsMu.Lock()
+		currentSnapshots := make([]MemSnapshot, len(memSnapshots))
+		copy(currentSnapshots, memSnapshots)
+		memSnapshotsMu.Unlock()
+
+		elapsed := time.Since(startTime)
+		puts := putCount.Load()
+		reserves := reserveCount.Load()
+		deletes := deleteCount.Load()
+		errors := errorCount.Load()
+
+		var peakHeap uint64
+		for _, snap := range currentSnapshots {
+			if snap.HeapAlloc > peakHeap {
+				peakHeap = snap.HeapAlloc
+			}
+		}
+
+		report := fmt.Sprintf(`
+================================================================================
+INTERIM REPORT - %s
+================================================================================
+Time: %s
+Elapsed: %v / %v (%.1f%%)
+
+Operations:
+  Put:     %d (%.0f/s)
+  Reserve: %d (%.0f/s)
+  Delete:  %d (%.0f/s)
+  Errors:  %d (%.4f%%)
+
+Memory:
+  Initial: %.2f MB
+  Current: %.2f MB
+  Peak:    %.2f MB
+
+Status: RUNNING
+================================================================================
+`,
+			phase,
+			time.Now().Format("2006-01-02 15:04:05"),
+			elapsed.Round(time.Second), duration, float64(elapsed)/float64(duration)*100,
+			puts, float64(puts)/elapsed.Seconds(),
+			reserves, float64(reserves)/elapsed.Seconds(),
+			deletes, float64(deletes)/elapsed.Seconds(),
+			errors, float64(errors)/float64(puts+reserves+1)*100,
+			float64(initialMem.HeapAlloc)/1024/1024,
+			float64(currentSnapshots[len(currentSnapshots)-1].HeapAlloc)/1024/1024,
+			float64(peakHeap)/1024/1024,
+		)
+
+		t.Log(report)
+
+		// 保存到文件
+		reportFile := fmt.Sprintf("stability_interim_%s.txt", time.Now().Format("20060102_150405"))
+		if err := os.WriteFile(reportFile, []byte(report), 0644); err != nil {
+			t.Logf("Warning: failed to save interim report: %v", err)
+		} else {
+			t.Logf("Interim report saved to %s", reportFile)
+		}
+	}
 
 	// 背压控制：限制队列中的最大任务数
 	const maxPendingJobs = 10000
@@ -606,6 +691,11 @@ func TestStability_LongRunning(t *testing.T) {
 				case <-ctx.Done():
 					return
 				default:
+					// 检查是否到达测试结束时间
+					if time.Now().After(testEndTime) {
+						return
+					}
+
 					// 背压控制：当队列积压过多时暂停生产
 					pending := putCount.Load() - deleteCount.Load()
 					if pending > maxPendingJobs {
@@ -639,6 +729,11 @@ func TestStability_LongRunning(t *testing.T) {
 				case <-ctx.Done():
 					return
 				default:
+					// 检查是否到达测试结束时间
+					if time.Now().After(testEndTime) {
+						return
+					}
+
 					job, err := q.Reserve(topics, 100*time.Millisecond)
 					if err == nil {
 						reserveCount.Add(1)
@@ -651,20 +746,31 @@ func TestStability_LongRunning(t *testing.T) {
 		}()
 	}
 
-	// 启动内存监控
+	// 启动内存监控和阶段性报告
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
+		memTicker := time.NewTicker(1 * time.Minute)
+		defer memTicker.Stop()
 
+		reportTicker := time.NewTicker(reportInterval)
+		defer reportTicker.Stop()
+
+		phaseNum := 1
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-memTicker.C:
+				// 检查是否到达测试结束时间
+				if time.Now().After(testEndTime) {
+					return
+				}
+
 				snap := collectMemSnapshot()
+				memSnapshotsMu.Lock()
 				memSnapshots = append(memSnapshots, snap)
+				memSnapshotsMu.Unlock()
 
 				t.Logf("Progress: put=%d reserve=%d delete=%d errors=%d heap=%.2fMB",
 					putCount.Load(),
@@ -673,6 +779,14 @@ func TestStability_LongRunning(t *testing.T) {
 					errorCount.Load(),
 					float64(snap.HeapAlloc)/1024/1024,
 				)
+			case <-reportTicker.C:
+				// 检查是否到达测试结束时间
+				if time.Now().After(testEndTime) {
+					return
+				}
+
+				saveInterimReport(fmt.Sprintf("Phase %d", phaseNum))
+				phaseNum++
 			}
 		}
 	}()
@@ -681,15 +795,24 @@ func TestStability_LongRunning(t *testing.T) {
 
 	// 分析结果
 	finalMem := collectMemSnapshot()
+	memSnapshotsMu.Lock()
 	memSnapshots = append(memSnapshots, finalMem)
+	memSnapshotsMu.Unlock()
+
+	actualDuration := time.Since(startTime)
 
 	t.Logf("\n=== Stability Test Results ===")
-	t.Logf("Duration: %v", duration)
+	t.Logf("Planned Duration: %v, Actual Duration: %v", duration, actualDuration.Round(time.Second))
 	t.Logf("Put: %d, Reserve: %d, Delete: %d, Errors: %d",
 		putCount.Load(), reserveCount.Load(), deleteCount.Load(), errorCount.Load())
 	t.Logf("Initial heap: %.2f MB", float64(initialMem.HeapAlloc)/1024/1024)
 	t.Logf("Final heap: %.2f MB", float64(finalMem.HeapAlloc)/1024/1024)
 	t.Logf("GC runs: %d", finalMem.NumGC-initialMem.NumGC)
+
+	// 检查是否因硬超时而终止
+	if actualDuration > duration+1*time.Minute {
+		t.Errorf("Test exceeded planned duration: planned=%v actual=%v (hard timeout triggered)", duration, actualDuration)
+	}
 
 	// 验证无严重内存泄漏（允许 2x 增长）
 	if finalMem.HeapAlloc > initialMem.HeapAlloc*2 && finalMem.HeapAlloc > 100*1024*1024 {
@@ -706,6 +829,9 @@ func TestStability_LongRunning(t *testing.T) {
 			t.Errorf("High error rate: %.2f%%", errorRate*100)
 		}
 	}
+
+	// 保存最终报告
+	saveInterimReport("FINAL")
 }
 
 // ============================================================
