@@ -1186,9 +1186,6 @@ func BenchmarkReserveDelete(b *testing.B) {
 
 // TestAsyncPut 测试异步 Put 功能
 func TestAsyncPut(t *testing.T) {
-	// 延长超时时间以容纳 SQLite 异步操作
-	t.Timeout(2 * time.Minute)
-
 	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
 		config := DefaultConfig()
 		config.Storage = testStorage.Storage
