@@ -143,6 +143,7 @@ func NewJobMeta(id uint64, topic string, priority uint32, delay, ttr time.Durati
 	if delay > 0 {
 		meta.ReadyAt = now.Add(delay)
 	} else {
+		// delay = 0 时，设置 ReadyAt 为现在（确保任务立即就绪）
 		meta.ReadyAt = now
 	}
 

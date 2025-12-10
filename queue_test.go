@@ -281,7 +281,7 @@ func ExampleQueue_stats() {
 	// 添加各种状态的任务
 	_, _ = q.Put("email", []byte("task1"), 1, 0, 60*time.Second)             // ready
 	_, _ = q.Put("email", []byte("task2"), 1, 5*time.Second, 60*time.Second) // delayed
-	job, _ := q.Reserve([]string{"email"}, TestTimeout(1*time.Second))                    // reserved
+	job, _ := q.Reserve([]string{"email"}, TestTimeout(1*time.Second))       // reserved
 
 	// 查看整体统计
 	stats := q.Stats()
@@ -577,8 +577,13 @@ func TestTouch_ResetTTR(t *testing.T) {
 			t.Fatalf("Start failed: %v", err)
 		}
 
-		// 发布任务，TTR 100ms
-		jobID, err := q.Put("test", []byte("task"), 1, 0, 100*time.Millisecond)
+		// 等待恢复完成
+		if err := q.WaitForRecovery(TestTimeout(5 * time.Second)); err != nil {
+			t.Logf("WaitForRecovery: %v", err)
+		}
+
+		// 发布任务，TTR 充分长以容纳 Windows 的时间乘数
+		jobID, err := q.Put("test", []byte("task"), 1, 0, 500*time.Millisecond)
 		if err != nil {
 			t.Fatalf("Put failed: %v", err)
 		}
@@ -1181,6 +1186,9 @@ func BenchmarkReserveDelete(b *testing.B) {
 
 // TestAsyncPut 测试异步 Put 功能
 func TestAsyncPut(t *testing.T) {
+	// 延长超时时间以容纳 SQLite 异步操作
+	t.Timeout(2 * time.Minute)
+
 	RunWithAllStorages(t, func(t *testing.T, testStorage *TestStorage) {
 		config := DefaultConfig()
 		config.Storage = testStorage.Storage
@@ -1220,7 +1228,14 @@ func TestAsyncPut(t *testing.T) {
 		}
 
 		// 等待异步存储完成
-		TestSleep(500 * time.Millisecond)
+		// Memory 存储很快，SQLite 需要更长时间
+		var waitTime time.Duration
+		if testStorage.Type == StorageTypeSQLite {
+			waitTime = 1 * time.Second
+		} else {
+			waitTime = 200 * time.Millisecond
+		}
+		TestSleep(waitTime)
 
 		// 验证所有任务都在队列中（使用 >= 因为可能有恢复的任务）
 		stats := q.Stats()

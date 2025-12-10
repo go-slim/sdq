@@ -691,9 +691,14 @@ func TestJob_ConcurrentTouch(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		// 等待恢复完成（异步恢复可能需要时间）
+		if err := q.WaitForRecovery(TestTimeout(5 * time.Second)); err != nil {
+			t.Logf("WaitForRecovery: %v", err)
+		}
+
 		// 创建并 Reserve 一个任务
 		id, _ := q.Put("touch-test", []byte("data"), 1, 0, 60*time.Second)
-		job, err := q.Reserve([]string{"touch-test"}, TestTimeout(1*time.Second))
+		job, err := q.Reserve([]string{"touch-test"}, TestTimeout(5*time.Second))
 		if err != nil {
 			t.Fatalf("Reserve failed: %v", err)
 		}

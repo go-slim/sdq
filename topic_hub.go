@@ -293,8 +293,8 @@ func (h *TopicHub) Put(topicName string, meta *JobMeta) (bool, error) {
 	// 加载到内存队列
 	needsNotify := false
 	needsWakeup := false
-	if meta.ReadyAt.IsZero() || time.Now().After(meta.ReadyAt) {
-		// Ready 任务
+	if meta.ReadyAt.IsZero() || !time.Now().Before(meta.ReadyAt) {
+		// Ready 任务（当前时间 >= ReadyAt）
 		meta.State = StateReady
 		t.pushReady(meta)
 		needsNotify = true
