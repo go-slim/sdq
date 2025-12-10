@@ -48,6 +48,7 @@ func TestTaskRegistration(t *testing.T) {
 
 	if tsk == nil {
 		t.Fatal("Register returned nil")
+		return
 	}
 
 	if tsk.name != taskName {

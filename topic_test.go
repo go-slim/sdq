@@ -9,6 +9,7 @@ func TestNewTopic(t *testing.T) {
 	topic := newTopic("test", nil)
 	if topic == nil {
 		t.Fatal("newTopic returned nil")
+		return
 	}
 
 	if topic.name != "test" {

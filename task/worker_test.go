@@ -45,6 +45,7 @@ func TestNewWorker(t *testing.T) {
 
 	if worker == nil {
 		t.Fatal("NewWorker() returned nil")
+		return
 	}
 
 	if worker.queue != q {

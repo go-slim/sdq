@@ -13,6 +13,7 @@ func TestNewRecoveryManager(t *testing.T) {
 		rm := newRecoveryRunner(ctx, testStorage.Storage)
 		if rm == nil {
 			t.Fatal("newRecoveryRunner returned nil")
+			return
 		}
 
 		if rm.storage != testStorage.Storage {
@@ -441,6 +442,7 @@ func TestRecoveryResultApply(t *testing.T) {
 		stats1 := hub.TopicStats("topic1")
 		if stats1 == nil {
 			t.Fatal("topic1 stats should not be nil")
+			return
 		}
 
 		// Note: one job is delayed, so it went to delayed queue
@@ -451,6 +453,7 @@ func TestRecoveryResultApply(t *testing.T) {
 		stats2 := hub.TopicStats("topic2")
 		if stats2 == nil {
 			t.Fatal("topic2 stats should not be nil")
+			return
 		}
 
 		if stats2.BuriedJobs != 1 {

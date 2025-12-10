@@ -1,5 +1,4 @@
 //go:build ignore
-// +build ignore
 
 package sdq
 
@@ -61,12 +60,12 @@ type EnvironmentInfo struct {
 
 // TestResult 单个测试结果
 type TestResult struct {
-	Name     string                 `json:"name"`
-	Status   string                 `json:"status"` // passed, failed, skipped
-	Duration string                 `json:"duration"`
-	Metrics  map[string]interface{} `json:"metrics"`
-	Memory   MemoryMetrics          `json:"memory"`
-	Error    string                 `json:"error,omitempty"`
+	Name     string         `json:"name"`
+	Status   string         `json:"status"` // passed, failed, skipped
+	Duration string         `json:"duration"`
+	Metrics  map[string]any `json:"metrics"`
+	Memory   MemoryMetrics  `json:"memory"`
+	Error    string         `json:"error,omitempty"`
 }
 
 // MemoryMetrics 内存指标
@@ -479,7 +478,7 @@ func generateHTMLReport(report *StabilityReport, path string) error {
 			}
 			return fmt.Sprintf("%d", ops)
 		},
-		"formatMetric": func(v interface{}) string {
+		"formatMetric": func(v any) string {
 			switch val := v.(type) {
 			case float64:
 				if val >= 1_000_000 {
@@ -1524,7 +1523,7 @@ func runLongRunningTest(t *testing.T) *TestResult {
 	result := &TestResult{
 		Name:    "LongRunning",
 		Status:  "passed",
-		Metrics: make(map[string]interface{}),
+		Metrics: make(map[string]any),
 	}
 
 	// LongRunning test gets 80% of total duration (it's the main stability test)
@@ -1670,7 +1669,7 @@ func runMillionJobsTest(t *testing.T) *TestResult {
 	result := &TestResult{
 		Name:    "MillionJobs",
 		Status:  "passed",
-		Metrics: make(map[string]interface{}),
+		Metrics: make(map[string]any),
 	}
 
 	jobCount := 50000 // 报表模式使用较少任务
@@ -1753,7 +1752,7 @@ func runManyTopicsTest(t *testing.T) *TestResult {
 	result := &TestResult{
 		Name:    "ManyTopics",
 		Status:  "passed",
-		Metrics: make(map[string]interface{}),
+		Metrics: make(map[string]any),
 	}
 
 	topicCount := 500
@@ -1849,7 +1848,7 @@ func runMemoryLeakTest(t *testing.T) *TestResult {
 	result := &TestResult{
 		Name:    "MemoryLeak",
 		Status:  "passed",
-		Metrics: make(map[string]interface{}),
+		Metrics: make(map[string]any),
 	}
 
 	config := DefaultConfig()
@@ -1963,7 +1962,7 @@ func runConcurrentOpsTest(t *testing.T) *TestResult {
 	result := &TestResult{
 		Name:    "ConcurrentOps",
 		Status:  "passed",
-		Metrics: make(map[string]interface{}),
+		Metrics: make(map[string]any),
 	}
 
 	config := DefaultConfig()
@@ -2110,7 +2109,7 @@ func runSQLiteStorageTest(t *testing.T) *TestResult {
 	result := &TestResult{
 		Name:    "SQLiteStorage",
 		Status:  "passed",
-		Metrics: make(map[string]interface{}),
+		Metrics: make(map[string]any),
 	}
 
 	dbPath := t.TempDir() + "/stability.db"

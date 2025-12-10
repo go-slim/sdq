@@ -33,6 +33,7 @@ func TestNewTopicHub(t *testing.T) {
 		hub := newTopicHub(&config, testStorage.Storage, ticker, nil)
 		if hub == nil {
 			t.Fatal("newTopicHub returned nil")
+			return
 		}
 
 		if hub.topics == nil {
@@ -62,6 +63,7 @@ func TestTopicHubGetOrCreateTopic(t *testing.T) {
 
 	if topic == nil {
 		t.Fatal("GetOrCreateTopic returned nil")
+		return
 	}
 
 	if topic.name != "test" {
@@ -192,6 +194,7 @@ func TestTopicHubTopicStats(t *testing.T) {
 	stats = hub.TopicStats("test")
 	if stats == nil {
 		t.Fatal("TopicStats should return stats for existing topic")
+		return
 	}
 
 	if stats.ReadyJobs != 1 {
@@ -364,6 +367,7 @@ func TestTopicHubTryReserve(t *testing.T) {
 		meta = hub.TryReserve([]string{"test"})
 		if meta == nil {
 			t.Fatal("TryReserve should return job")
+			return
 		}
 
 		if meta.State != StateReserved {
@@ -829,6 +833,7 @@ func TestTopicHub_ConcurrentCreate(t *testing.T) {
 		}
 		if stats == nil {
 			t.Fatal("Topic stats should not be nil")
+			return
 		}
 
 		if stats.TotalJobs != numGoroutines {

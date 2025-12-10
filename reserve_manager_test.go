@@ -15,6 +15,7 @@ func TestNewReserveManager(t *testing.T) {
 
 	if rm == nil {
 		t.Fatal("newReserveManager returned nil")
+		return
 	}
 
 	if rm.waitingConns == nil {

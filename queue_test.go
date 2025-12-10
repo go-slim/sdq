@@ -805,6 +805,7 @@ func TestReserve_ImmediateAvailable(t *testing.T) {
 
 		if job == nil {
 			t.Fatal("expected job, got nil")
+			return
 		}
 
 		if elapsed > 100*time.Millisecond {

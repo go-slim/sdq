@@ -106,6 +106,7 @@ func TestInspector_ListTopics(t *testing.T) {
 	}
 	if emailTopic == nil {
 		t.Fatal("email topic not found")
+		return
 	}
 	if emailTopic.ReadyJobs != 2 {
 		t.Errorf("expected 2 ready jobs in email topic, got %d", emailTopic.ReadyJobs)
