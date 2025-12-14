@@ -13,17 +13,6 @@ const (
 	MaxWaitersPerTopic = 1000
 )
 
-// ReserveHandler 处理 Reserve 操作的接口
-// 由 Queue 实现，提供给 reserveManager 使用
-type ReserveHandler interface {
-	// TryReserve 尝试立即预留任务
-	TryReserve(topics []string) *JobMeta
-	// GetStorage 获取 storage
-	GetStorage() Storage
-	// GetQueue 获取 Queue 引用（用于 Job 操作方法）
-	GetQueue() *Queue
-}
-
 // reserveWaiter 等待 Reserve 的连接
 // 模仿 beanstalkd 的 waiting connection 机制
 type reserveWaiter struct {
@@ -80,11 +69,11 @@ func (rm *reserveManager) stop() {
 // Reserve 从指定 topics 保留一个任务
 // topics: topic 名称列表
 // timeout: 等待超时时间，必须大于 0
-// handler: 处理 Reserve 操作的接口
+// queue: Queue 引用
 func (rm *reserveManager) Reserve(
 	topics []string,
 	timeout time.Duration,
-	handler ReserveHandler,
+	queue *Queue,
 ) (*Job, error) {
 	// 1. timeout 必须大于 0
 	if timeout <= 0 {
@@ -92,9 +81,9 @@ func (rm *reserveManager) Reserve(
 	}
 
 	// 2. 先尝试立即获取（快速路径）
-	meta := handler.TryReserve(topics)
+	meta := queue.TryReserve(topics)
 	if meta != nil {
-		return NewJobWithStorage(meta, handler.GetStorage(), handler.GetQueue()), nil
+		return NewJobWithStorage(meta, queue.storage, queue), nil
 	}
 
 	// 3. 没有任务，注册到等待队列
@@ -159,8 +148,8 @@ func (rm *reserveManager) registerWaiter(topics []string, waiter *reserveWaiter)
 
 // notifyWaiters 通知等待队列有新任务可用
 // 只唤醒一个 waiter（FIFO），防止惊群效应
-// handler: 处理 Reserve 操作的接口
-func (rm *reserveManager) notifyWaiters(topic string, handler ReserveHandler) {
+// queue: Queue 引用
+func (rm *reserveManager) notifyWaiters(topic string, queue *Queue) {
 	rm.mu.Lock()
 	waitList := rm.waitingConns[topic]
 	if waitList == nil || waitList.Len() == 0 {
@@ -181,7 +170,7 @@ func (rm *reserveManager) notifyWaiters(topic string, handler ReserveHandler) {
 		}
 
 		// 尝试为这个 waiter 预留任务
-		meta := handler.TryReserve(waiter.topics)
+		meta := queue.TryReserve(waiter.topics)
 		if meta != nil {
 			// 成功预留，从所有队列中移除这个 waiter
 			waitList.Remove(elem)
@@ -189,7 +178,7 @@ func (rm *reserveManager) notifyWaiters(topic string, handler ReserveHandler) {
 			rm.mu.Unlock()
 
 			// 创建 Job 并发送给 waiter
-			job := NewJobWithStorage(meta, handler.GetStorage(), handler.GetQueue())
+			job := NewJobWithStorage(meta, queue.storage, queue)
 			select {
 			case waiter.resultCh <- job:
 			default:

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"go-slim.dev/sdq"
+	"go-slim.dev/sdq/x/memory"
+	"go-slim.dev/sdq/x/timewheel"
 )
 
 // Example 1: MemoryStorage + TimeWheelTicker
@@ -16,10 +18,10 @@ func main() {
 	config := sdq.DefaultConfig()
 
 	// 使用内存存储（默认）
-	config.Storage = sdq.NewMemoryStorage()
+	config.Storage = memory.New()
 
 	// 使用时间轮 Ticker（适合大量定时任务）
-	config.Ticker = sdq.NewTimeWheelTicker(
+	config.Ticker = timewheel.New(
 		100*time.Millisecond, // tick 间隔
 		3600,                 // 时间轮槽位数（支持 1 小时范围）
 	)
@@ -93,7 +95,8 @@ func main() {
 	}
 
 	// 显示最终统计
-	stats := q.Stats()
+	insp := sdq.NewInspector(q)
+	stats := insp.Stats()
 	fmt.Printf("\nFinal stats: Ready=%d, Reserved=%d, Delayed=%d, Buried=%d\n",
 		stats.ReadyJobs, stats.ReservedJobs, stats.DelayedJobs, stats.BuriedJobs)
 }

@@ -21,6 +21,9 @@ type Tickable interface {
 // Ticker 定时器接口
 // 负责定时触发已注册对象的 ProcessTick 方法
 type Ticker interface {
+	// Name 返回定时器名称
+	Name() string
+
 	// Start 启动定时器
 	Start()
 
@@ -42,8 +45,8 @@ type Ticker interface {
 
 // TickerStats 定时器统计信息
 type TickerStats struct {
+	Name            string        // 定时器名称
 	RegisteredCount int           // 注册的对象数量
 	NextTickTime    time.Time     // 下一个 tick 时间
 	TimeUntilTick   time.Duration // 距离下一个 tick 的时间
-	Mode            string        // 模式：dynamic 或 timewheel
 }

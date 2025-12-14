@@ -28,16 +28,18 @@ Topic 是命名队列，用于隔离不同类型的任务（类似 beanstalkd �
 
 **命名规则：**
 
-- 允许字符：字母（a-z, A-Z）、数字（0-9）、下划线（\_）、中划线（-）
+- 允许字符：字母（a-z, A-Z）、数字（0-9）、下划线（\_）、中划线（-）、冒号（:）
+- 冒号用于命名空间分隔，便于 Redis 等存储引擎聚合
 - 长度限制：1-200 字符
 - 不能为空字符串
 
 ```go
 // 有效的 topic 名称
 "email", "sms_queue", "order-processing", "user_2024", "default"
+"app:email", "app:user:notifications"  // 使用冒号分隔命名空间
 
 // 无效的 topic 名称
-"email@queue", "queue#1", "中文队列", ""
+"email@queue", "queue#1", "中文队列", "", "test.topic", "test/topic"
 ```
 
 ### Job 状态
@@ -139,8 +141,15 @@ Topic 是命名队列，用于隔离不同类型的任务（类似 beanstalkd �
 
 - `Peek` - 查看任务详情
 - `PeekReady/PeekDelayed/PeekBuried` - 查看队列头部
-- `Stats/StatsTopic/StatsJob` - 获取统计信息
+
+**Inspector 查询操作（通过 `sdq.NewInspector(q)` 获取）：**
+
+- `Stats` - 获取整体统计信息
+- `TopicStats` - 获取所有 Topic 统计
+- `StatsTopic` - 获取单个 Topic 统计
+- `StatsJob` - 获取单个任务信息
 - `ListTopics` - 列出所有 topic
+- `WaitingStats` - 获取等待队列统计
 
 ## 配置
 
@@ -185,7 +194,9 @@ config := sdq.DefaultConfig()
 **Memory Storage:**
 
 ```go
-storage := sdq.NewMemoryStorage()
+import "go-slim.dev/sdq/x/memory"
+
+storage := memory.New()
 ```
 
 **SQLite Storage:**
@@ -201,16 +212,16 @@ go get github.com/mattn/go-sqlite3
 ```go
 import (
     _ "github.com/mattn/go-sqlite3"
-    "go-slim.dev/sdq"
+    "go-slim.dev/sdq/x/sqlite"
 )
 
 // 默认配置
-storage, _ := sdq.NewSQLiteStorage("./jobs.db")
+storage, _ := sqlite.New("./jobs.db")
 
 // 自定义批量配置（用于性能调优）
-storage, _ := sdq.NewSQLiteStorage("./jobs.db",
-    sdq.WithMaxBatchSize(500),
-    sdq.WithMaxBatchBytes(8*1024*1024),
+storage, _ := sqlite.New("./jobs.db",
+    sqlite.WithMaxBatchSize(500),
+    sqlite.WithMaxBatchBytes(8*1024*1024),
 )
 ```
 
@@ -223,10 +234,10 @@ go get modernc.org/sqlite
 ```go
 import (
     _ "modernc.org/sqlite"
-    "go-slim.dev/sdq"
+    "go-slim.dev/sdq/x/sqlite"
 )
 
-storage, _ := sdq.NewSQLiteStorage("./jobs.db")
+storage, _ := sqlite.New("./jobs.db")
 ```
 
 **配置建议：**
@@ -240,14 +251,19 @@ storage, _ := sdq.NewSQLiteStorage("./jobs.db")
 ### Ticker 配置
 
 ```go
+import (
+    "go-slim.dev/sdq/x/timewheel"
+    "go-slim.dev/sdq/x/dynsleep"
+)
+
 // 使用默认 Ticker (自动选择)
 config.Ticker = nil
 
 // 使用 TimeWheel Ticker (固定时间轮询)
-config.Ticker = sdq.NewTimeWheelTicker(10*time.Millisecond, 100)
+config.Ticker = timewheel.New(10*time.Millisecond, 100)
 
 // 使用 DynamicSleep Ticker (动态睡眠)
-config.Ticker = sdq.NewDynamicSleepTicker(10*time.Millisecond, 1*time.Second)
+config.Ticker = dynsleep.New(10*time.Millisecond, 1*time.Second)
 ```
 
 ## Task API
@@ -312,8 +328,11 @@ _ = processOrder.Publish(ctx, OrderData{OrderID: 126},
 #### 使用示例
 
 ```go
-// 启动 Worker 处理多个任务类型
-worker := task.NewWorker(q,
+// 启动 Worker 处理所有已注册的任务
+worker := task.NewWorker(q)
+
+// 或者只处理指定的任务类型
+worker := task.NewWorkerWithTasks(q,
     "process-order",
     "send-notification",
     "generate-report",
@@ -562,7 +581,7 @@ for i := 0; i < 10; i++ {
 ### 3. 控制并发
 
 ```go
-worker := task.NewWorker(q, "process-order")
+worker := task.NewWorker(q)
 
 // CPU 密集型任务
 _ = worker.Start(runtime.NumCPU())
@@ -578,8 +597,9 @@ go func() {
     ticker := time.NewTicker(30 * time.Second)
     defer ticker.Stop()
 
+    inspector := sdq.NewInspector(q)
     for range ticker.C {
-        stats := q.Stats()
+        stats := inspector.Stats()
         if stats.ReadyJobs > 10000 {
             log.Printf("Warning: %d ready jobs pending", stats.ReadyJobs)
         }
@@ -594,7 +614,7 @@ go func() {
 
 ```go
 func processBuriedJobs(q *sdq.Queue, topic string) {
-    stats, _ := q.StatsTopic(topic)
+    stats, _ := sdq.NewInspector(q).StatsTopic(topic)
     if stats.BuriedJobs > 0 {
         kicked, _ := q.Kick(topic, 10)
         log.Printf("Kicked %d jobs", kicked)
@@ -635,16 +655,16 @@ log.Println("Shutdown complete")
 
 ```go
 // SQLite 高并发场景
-storage, _ := sdq.NewSQLiteStorage("./jobs.db",
-    sdq.WithMaxBatchSize(2000),
-    sdq.WithMaxBatchBytes(32*1024*1024),
+storage, _ := sqlite.New("./jobs.db",
+    sqlite.WithMaxBatchSize(2000),
+    sqlite.WithMaxBatchBytes(32*1024*1024),
 )
 
 // TimeWheel 适合大量延迟任务
-config.Ticker = sdq.NewTimeWheelTicker(10*time.Millisecond, 3600)
+config.Ticker = timewheel.New(10*time.Millisecond, 3600)
 
 // DynamicSleep 适合少量延迟任务
-config.Ticker = sdq.NewDynamicSleepTicker(10*time.Millisecond, 5*time.Minute)
+config.Ticker = dynsleep.New(10*time.Millisecond, 5*time.Minute)
 ```
 
 ## 架构设计
@@ -654,7 +674,7 @@ config.Ticker = sdq.NewDynamicSleepTicker(10*time.Millisecond, 5*time.Minute)
 | 组件               | 职责         | 说明                                    |
 | ------------------ | ------------ | --------------------------------------- |
 | **Queue**          | 队列主体     | 协调各组件，提供统一 API                |
-| **TopicHub**       | Topic 管理器 | 管理所有 topic，负责任务分发            |
+| **TopicManager**   | Topic 管理器 | 管理所有 topic，负责任务分发            |
 | **Topic**          | 单个队列     | 管理 Ready/Delayed/Reserved/Buried 队列 |
 | **Storage**        | 存储后端     | 持久化任务数据（Memory/SQLite）         |
 | **Ticker**         | 定时器       | 处理延迟任务到期和 TTR 超时             |
@@ -707,21 +727,21 @@ Reserve(topics, timeout)
 │  Put    │ → Storage.SaveJob
 └────┬────┘              ↓
      │            ┌──────────────┐
-     └──────────→ │  TopicHub    │
+     └──────────→ │ TopicManager │
                   │  ├─ Topic A  │
                   │  ├─ Topic B  │
                   │  └─ Topic C  │
                   └──────┬───────┘
                          │
-                    ┌────┴────┐
-                    │ Ticker  │ (定时处理)
-                    │ ├─ Delayed → Ready
-                    │ └─ Reserved → Ready (TTR)
-                    └─────────┘
+                  ┌──────┴──────┐
+                  │ Ticker      │ (Timer Processing)
+                  │ ├─ Delayed  │ → Ready
+                  │ └─ Reserved │ → Ready (TTR)
+                  └─────────────┘
                          │
-                  ┌──────┴────────┐
-                  │ ReserveManager│
-                  └──────┬────────┘
+                  ┌──────┴─────────┐
+                  │ ReserveManager │
+                  └──────┬─────────┘
                          │
                     ┌────┴────┐
                     │ Reserve │ → Storage.GetJobBody

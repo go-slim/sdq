@@ -8,6 +8,8 @@ import (
 
 	_ "github.com/mattn/go-sqlite3" // SQLite 驱动
 	"go-slim.dev/sdq"
+	"go-slim.dev/sdq/x/sqlite"
+	"go-slim.dev/sdq/x/timewheel"
 )
 
 // Example 3: SQLiteStorage + TimeWheelTicker
@@ -21,14 +23,14 @@ func main() {
 	config := sdq.DefaultConfig()
 
 	// 使用 SQLite 存储（持久化）
-	storage, err := sdq.NewSQLiteStorage(dbPath)
+	storage, err := sqlite.New(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to create SQLite storage: %v", err)
 	}
 	config.Storage = storage
 
 	// 使用时间轮 Ticker
-	config.Ticker = sdq.NewTimeWheelTicker(
+	config.Ticker = timewheel.New(
 		100*time.Millisecond,
 		3600,
 	)
@@ -64,7 +66,8 @@ func main() {
 	}
 
 	// 显示初始统计
-	stats := q.Stats()
+	insp := sdq.NewInspector(q)
+	stats := insp.Stats()
 	fmt.Printf("\nInitial stats: Total=%d, Ready=%d, Delayed=%d\n",
 		stats.TotalJobs, stats.ReadyJobs, stats.DelayedJobs)
 
@@ -73,7 +76,7 @@ func main() {
 	_ = q.Stop()
 
 	// 重新打开队列（从 SQLite 恢复数据）
-	storage2, err := sdq.NewSQLiteStorage(dbPath)
+	storage2, err := sqlite.New(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to reopen SQLite storage: %v", err)
 	}
@@ -91,7 +94,8 @@ func main() {
 	}
 
 	// 验证数据已恢复
-	stats = q.Stats()
+	insp = sdq.NewInspector(q)
+	stats = insp.Stats()
 	fmt.Printf("After restart: Total=%d, Ready=%d, Delayed=%d\n",
 		stats.TotalJobs, stats.ReadyJobs, stats.DelayedJobs)
 
@@ -117,7 +121,7 @@ func main() {
 
 	// 场景 4: 查看某个 Topic 的统计
 	for _, topic := range topics {
-		topicStats, err := q.StatsTopic(topic)
+		topicStats, err := insp.StatsTopic(topic)
 		if err != nil {
 			log.Printf("Failed to get stats for topic %s: %v", topic, err)
 			continue

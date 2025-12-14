@@ -34,12 +34,13 @@ package main
 import (
     "time"
     "go-slim.dev/sdq"
+    "go-slim.dev/sdq/x/memory"
 )
 
 func main() {
     // 创建队列
     config := sdq.DefaultConfig()
-    config.Storage = sdq.NewMemoryStorage()
+    config.Storage = memory.New()
 
     q, _ := sdq.New(config)
     _ = q.Start()
@@ -68,7 +69,8 @@ import (
     "context"
     "time"
     "go-slim.dev/sdq"
-    "go-slim.dev/sdq/task"
+    "go-slim.dev/sdq/x/memory"
+    "go-slim.dev/sdq/x/task"
 )
 
 type EmailTask struct {
@@ -86,6 +88,7 @@ var sendEmail = task.Register("send-email", &task.Config{
 
 func main() {
     config := sdq.DefaultConfig()
+    config.Storage = memory.New()
     q, _ := sdq.New(config)
     _ = q.Start()
     defer q.Stop()
@@ -99,7 +102,7 @@ func main() {
     })
 
     // 启动 Worker
-    worker := task.NewWorker(q, "send-email")
+    worker := task.NewWorker(q)
     _ = worker.Start(3)
     defer worker.Stop()
 }
@@ -142,23 +145,18 @@ config := sdq.Config{
 ### Storage
 
 ```go
+import (
+    "go-slim.dev/sdq/x/memory"
+    "go-slim.dev/sdq/x/sqlite"
+)
+
 // Memory（开发测试）
-config.Storage = sdq.NewMemoryStorage()
+config.Storage = memory.New()
 
 // SQLite（生产环境）
 // 需要引入驱动：github.com/mattn/go-sqlite3 或 modernc.org/sqlite
-config.Storage, _ = sdq.NewSQLiteStorage("./jobs.db")
+config.Storage, _ = sqlite.New("./jobs.db")
 ```
-
-## 错误处理
-
-| 错误                    | 说明           |
-| ----------------------- | -------------- |
-| `ErrNotFound`           | 任务不存在     |
-| `ErrTimeout`            | 操作超时       |
-| `ErrNotReserved`        | 任务未被保留   |
-| `ErrNotBuried`          | 任务未被埋葬   |
-| `ErrTouchLimitExceeded` | Touch 次数超限 |
 
 ## 文档
 

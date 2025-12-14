@@ -34,6 +34,9 @@ type JobMetaList struct {
 // - 元数据：轻量级（~200B），常驻内存，用于调度，会更新
 // - Body：可能很大（KB~MB），按需加载，不可变
 type Storage interface {
+	// Name 返回存储名称
+	Name() string
+
 	// === 任务创建（原子操作） ===
 
 	// SaveJob 保存完整任务（元数据 + Body）
@@ -84,6 +87,11 @@ type Storage interface {
 	// 如果没有任务则返回 0
 	GetMaxJobID(ctx context.Context) (uint64, error)
 
+	// === 统计信息 ===
+
+	// Stats 返回存储统计信息
+	Stats(ctx context.Context) (*StorageStats, error)
+
 	// === 资源管理 ===
 
 	// Close 关闭存储
@@ -92,22 +100,16 @@ type Storage interface {
 
 // StorageStats 存储统计信息
 type StorageStats struct {
-	TotalJobs      int64 // 总任务数
-	TotalTopics    int   // 总 topic 数
-	MetaSize       int64 // 元数据存储大小（字节）
-	BodySize       int64 // Body 存储大小（字节）
-	TotalSize      int64 // 总存储大小（字节）
-	LastSaveTime   int64 // 最后保存时间（Unix 时间戳）
-	LastLoadTime   int64 // 最后加载时间（Unix 时间戳）
-	AvgMetaSize    int64 // 平均元数据大小（字节）
-	AvgBodySize    int64 // 平均 Body 大小（字节）
-	LoadedMetaSize int64 // 已加载元数据大小（字节）
-	LoadedBodySize int64 // 已加载 Body 大小（字节）
-}
-
-// StorageWithStats 支持统计信息的存储接口（可选）
-type StorageWithStats interface {
-	Storage
-	// Stats 返回存储统计信息
-	Stats(ctx context.Context) (*StorageStats, error)
+	Name           string // 存储名称
+	TotalJobs      int64  // 总任务数
+	TotalTopics    int    // 总 topic 数
+	MetaSize       int64  // 元数据存储大小（字节）
+	BodySize       int64  // Body 存储大小（字节）
+	TotalSize      int64  // 总存储大小（字节）
+	LastSaveTime   int64  // 最后保存时间（Unix 时间戳）
+	LastLoadTime   int64  // 最后加载时间（Unix 时间戳）
+	AvgMetaSize    int64  // 平均元数据大小（字节）
+	AvgBodySize    int64  // 平均 Body 大小（字节）
+	LoadedMetaSize int64  // 已加载元数据大小（字节）
+	LoadedBodySize int64  // 已加载 Body 大小（字节）
 }

@@ -24,7 +24,6 @@ type Config struct {
 	// Ticker 自定义 Ticker 实例（优先级高于 NewTickerFunc）
 	Ticker Ticker
 	// NewTickerFunc Ticker 构造函数（当 Ticker 为 nil 时使用）
-	// 如果都为 nil，则使用默认的 DynamicSleepTicker
 	NewTickerFunc NewTickerFunc
 
 	// === Touch 限制配置 ===
@@ -52,7 +51,6 @@ type Config struct {
 	// Storage 存储后端实例（优先级高于 NewStorageFunc）
 	Storage Storage
 	// NewStorageFunc Storage 构造函数（当 Storage 为 nil 时使用）
-	// 如果都为 nil，则使用默认的 MemoryStorage
 	NewStorageFunc NewStorageFunc
 
 	// === 日志配置 ===

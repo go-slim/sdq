@@ -17,40 +17,18 @@ type topic struct {
 	reserved map[uint64]*JobMeta // 保留任务映射（ID -> Meta）
 	buried   *jobMetaHeap        // 埋葬任务优先级队列（按 Priority 排序）
 
-	// 统计（可选，用于记录超时等事件）
-	queueStats *QueueStats
-}
-
-// topicWrapper wraps a topic and provides Tickable interface
-// 注意：topicWrapper 不再需要独立的锁，因为 topic 本身是线程安全的
-type topicWrapper struct {
-	topic *topic
-}
-
-// ProcessTick implements Tickable interface
-func (w *topicWrapper) ProcessTick(now time.Time) {
-	w.topic.ProcessTick(now)
-}
-
-// NextTickTime implements Tickable interface
-func (w *topicWrapper) NextTickTime() time.Time {
-	return w.topic.NextTickTime()
-}
-
-// NeedsTick implements Tickable interface
-func (w *topicWrapper) NeedsTick() bool {
-	return w.topic.NeedsTick()
+	queue *Queue
 }
 
 // newTopic 创建新的 topic
-func newTopic(name string, queueStats *QueueStats) *topic {
+func newTopic(name string, queue *Queue) *topic {
 	return &topic{
-		name:       name,
-		ready:      newJobMetaHeap(),
-		delayed:    newDelayedJobHeap(),
-		reserved:   make(map[uint64]*JobMeta),
-		buried:     newJobMetaHeap(),
-		queueStats: queueStats,
+		name:     name,
+		ready:    newJobMetaHeap(),
+		delayed:  newDelayedJobHeap(),
+		reserved: make(map[uint64]*JobMeta),
+		buried:   newJobMetaHeap(),
+		queue:    queue,
 	}
 }
 
@@ -135,13 +113,13 @@ func (t *topic) addReserved(meta *JobMeta) {
 	t.reserved[meta.ID] = meta
 }
 
-// removeReserved 移除保留任务
-func (t *topic) removeReserved(id uint64) *JobMeta {
+// removeReserved 移除保留任务，返回 (meta, needsTick)
+func (t *topic) removeReserved(id uint64) (*JobMeta, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	meta := t.reserved[id]
 	delete(t.reserved, id)
-	return meta
+	return meta, t.needsTick()
 }
 
 // getReserved 获取保留任务
@@ -251,6 +229,11 @@ func (t *topic) NextTickTime() time.Time {
 func (t *topic) NeedsTick() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+	return t.needsTick()
+}
+
+// needsTick 是否需要 tick（调用者必须持有锁）
+func (t *topic) needsTick() bool {
 	return t.delayed.Len() > 0 || len(t.reserved) > 0
 }
 
@@ -299,14 +282,14 @@ func (t *topic) processReservedTimeout(now time.Time) {
 			heap.Push(t.ready, meta)
 
 			// 记录超时统计
-			if t.queueStats != nil {
-				t.queueStats.RecordTimeout()
+			if t.queue != nil && t.queue.stats != nil {
+				t.queue.stats.recordTimeout()
 			}
 		}
 	}
 }
 
-// === 批量操作（用于 TopicHub 内部，需要原子操作多个队列） ===
+// === 批量操作（用于 TopicManager 内部，需要原子操作多个队列） ===
 
 // popReadyAndAddReserved 原子地从 Ready 弹出并加入 Reserved
 func (t *topic) popReadyAndAddReserved(now time.Time) *JobMeta {
@@ -369,13 +352,14 @@ func (t *topic) removeReservedAndPushDelayed(id uint64, priority uint32, readyAt
 }
 
 // removeReservedAndPushBuried 原子地从 Reserved 移除并加入 Buried（用于 Bury）
-func (t *topic) removeReservedAndPushBuried(id uint64, priority uint32, now time.Time) *JobMeta {
+// 返回 (meta, needsTick)
+func (t *topic) removeReservedAndPushBuried(id uint64, priority uint32, now time.Time) (*JobMeta, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	meta := t.reserved[id]
 	if meta == nil {
-		return nil
+		return nil, t.needsTick()
 	}
 	delete(t.reserved, id)
 
@@ -386,7 +370,7 @@ func (t *topic) removeReservedAndPushBuried(id uint64, priority uint32, now time
 	meta.ReservedAt = time.Time{}
 	heap.Push(t.buried, meta)
 
-	return meta
+	return meta, t.needsTick()
 }
 
 // popBuriedAndPushReady 原子地从 Buried 弹出并加入 Ready（用于 Kick）

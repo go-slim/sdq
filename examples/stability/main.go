@@ -33,8 +33,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"go-slim.dev/sdq"
-	"go-slim.dev/sdq/inspector"
-	"go-slim.dev/sdq/metrics"
+	"go-slim.dev/sdq/x/dynsleep"
+	"go-slim.dev/sdq/x/memory"
+	"go-slim.dev/sdq/x/metrics"
+	"go-slim.dev/sdq/x/sqlite"
+	"go-slim.dev/sdq/x/timewheel"
 )
 
 // JobPayload 模拟任务数据
@@ -73,10 +76,10 @@ func main() {
 	// 配置 Storage
 	switch *storage {
 	case "memory":
-		config.Storage = sdq.NewMemoryStorage()
+		config.Storage = memory.New()
 		slog.Info("using memory storage")
 	case "sqlite":
-		sqliteStorage, err := sdq.NewSQLiteStorage(*dbPath)
+		sqliteStorage, err := sqlite.New(*dbPath)
 		if err != nil {
 			slog.Error("failed to create sqlite storage", slog.Any("error", err))
 			os.Exit(1)
@@ -91,10 +94,10 @@ func main() {
 	// 配置 Ticker
 	switch *ticker {
 	case "dynamic":
-		config.Ticker = sdq.NewDynamicSleepTicker(100*time.Millisecond, 5*time.Second)
+		config.Ticker = dynsleep.New(100*time.Millisecond, 5*time.Second)
 		slog.Info("using dynamic ticker", slog.Duration("min", 100*time.Millisecond), slog.Duration("max", 5*time.Second))
 	case "timewheel":
-		config.Ticker = sdq.NewTimeWheelTicker(100*time.Millisecond, 3600)
+		config.Ticker = timewheel.New(100*time.Millisecond, 3600)
 		slog.Info("using timewheel ticker", slog.Duration("interval", 100*time.Millisecond), slog.Int("slots", 3600))
 	default:
 		slog.Error("unknown ticker type", slog.String("ticker", *ticker))
@@ -111,10 +114,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 启动 Inspector HTTP 服务器
-	insp := inspector.New(q)
+	// 启动 HTTP 服务器
 	mux := http.NewServeMux()
-	mux.Handle("/", inspector.NewHandler(insp))
 
 	// 注册 Prometheus metrics
 	if *enableMetrics {
@@ -129,9 +130,8 @@ func main() {
 		Handler: mux,
 	}
 	go func() {
-		slog.Info("inspector dashboard available", slog.String("url", "http://localhost"+*addr))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("inspector server error", slog.Any("error", err))
+			slog.Error("http server error", slog.Any("error", err))
 		}
 	}()
 
