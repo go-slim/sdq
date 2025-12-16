@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+    --color-indigo: var(--color-indigo-600);
+    --color-red: var(--color-red-600);
+    --color-amber: var(--color-amber-600);
+    --color-lime: var(--color-lime-600);
+    --color-emerald: var(--color-emerald-600);
+    --color-fuchsia: var(--color-fuchsia-600);
+}
+
+html,
+body {
+    @apply overscroll-none;
+}
+
+.dark html,
+.dark body {
+    @apply bg-gray-50;
+    @apply dark:bg-[#0d1117] dark:text-white;
+}
