@@ -57,6 +57,7 @@ func TestNew(t *testing.T) {
 	ticker := New(10*time.Millisecond, 100)
 	if ticker == nil {
 		t.Fatal("New returned nil")
+		return
 	}
 
 	if ticker.tickInterval != 10*time.Millisecond {

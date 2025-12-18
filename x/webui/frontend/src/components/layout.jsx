@@ -123,12 +123,12 @@ export function Layout({ children }) {
           isCollapsed ? "w-16" : "w-64"
         )}>
           <nav>
-            <NavLink Icon={ListTodoIcon} label="Topics" href="/" subhref="/topics" />
-            <NavLink Icon={DatabaseIcon} label="Storage" href="/storage" />
-            <NavLink Icon={LineChartIcon} label="Metrics" href="/metrics" />
+            <NavLink Icon={ListTodoIcon} label="Topics" href="" subhref="topics" />
+            <NavLink Icon={DatabaseIcon} label="Storage" href="storage" />
+            <NavLink Icon={LineChartIcon} label="Metrics" href="metrics" />
           </nav>
           <div>
-            <NavLink Icon={SettingsIcon} label="Settings" href="/settings" />
+            <NavLink Icon={SettingsIcon} label="Settings" href="settings" />
           </div>
         </aside>
         <main className="flex-1 pt-24 pb-8 px-4 sm:px-6 lg:px-8">

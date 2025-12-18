@@ -2,16 +2,24 @@ package sdq
 
 import (
 	"context"
-	"sort"
 	"sync"
 	"time"
+)
+
+// SortOrder 排序方向
+type SortOrder int
+
+const (
+	SortAsc  SortOrder = iota // 升序（默认）
+	SortDesc                  // 降序
 )
 
 // topicManager 管理所有 topic
 // 负责 topic 的创建、查找、任务分配等
 type topicManager struct {
 	mu     sync.RWMutex
-	topics map[string]*topic
+	topics map[string]*topic // 快速查找
+	tree   *bst              // 有序索引
 	queue  *Queue
 }
 
@@ -19,6 +27,7 @@ type topicManager struct {
 func newTopicManager(q *Queue) *topicManager {
 	return &topicManager{
 		topics: make(map[string]*topic),
+		tree:   newBST(),
 		queue:  q,
 	}
 }
@@ -36,6 +45,7 @@ func (h *topicManager) getOrCreateTopic(name string) (*topic, error) {
 
 	t := newTopic(name, h.queue)
 	h.topics[name] = t
+	h.tree.insert(name)
 	return t, nil
 }
 
@@ -110,6 +120,7 @@ func (h *topicManager) cleanupEmptyTopics() int {
 
 			// 删除 topic
 			delete(h.topics, name)
+			h.tree.delete(name)
 			cleaned++
 		}
 	}
@@ -127,17 +138,43 @@ func (h *topicManager) findJob(id uint64) (*JobMeta, *topic) {
 	return nil, nil
 }
 
-// listTopics 列出所有 topic 名称（按字母排序）
+// listTopics 列出所有 topic 名称（已排序）
 func (h *topicManager) listTopics() []string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	names := make([]string, 0, len(h.topics))
-	for name := range h.topics {
+	names := make([]string, 0, h.tree.size)
+	for name := range h.tree.All() {
 		names = append(names, name)
 	}
-	sort.Strings(names)
 	return names
+}
+
+// listTopicsPage 分页列出 topic 名称（已排序）
+// offset: 起始位置（从 0 开始）
+// limit: 返回数量
+// order: 排序方向（SortAsc 或 SortDesc）
+// 返回: (topic 名称列表, 总数)
+func (h *topicManager) listTopicsPage(offset, limit int, order SortOrder) ([]string, int) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	total := h.tree.size
+	if offset >= total {
+		return nil, total
+	}
+
+	names := make([]string, 0, limit)
+	if order == SortDesc {
+		for name := range h.tree.RangeDesc(offset, limit) {
+			names = append(names, name)
+		}
+	} else {
+		for name := range h.tree.Range(offset, limit) {
+			names = append(names, name)
+		}
+	}
+	return names, total
 }
 
 // topicStats 获取单个 topic 的统计信息
@@ -152,28 +189,51 @@ func (h *topicManager) topicStats(name string) *TopicStats {
 	return t.stats()
 }
 
-// allTopicStats 获取所有 topic 的统计信息
+// allTopicStats 获取所有 topic 的统计信息（已排序）
 func (h *topicManager) allTopicStats() []*TopicStats {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	stats := make([]*TopicStats, 0, len(h.topics))
-	for _, t := range h.topics {
-		stats = append(stats, t.stats())
+	stats := make([]*TopicStats, 0, h.tree.size)
+	for name := range h.tree.All() {
+		if t := h.topics[name]; t != nil {
+			stats = append(stats, t.stats())
+		}
 	}
 	return stats
 }
 
-// totalJobs 获取总任务数
-func (h *topicManager) totalJobs() int {
+// allTopicStatsPage 分页获取 topic 的统计信息（已排序）
+// offset: 起始位置（从 0 开始）
+// limit: 返回数量
+// order: 排序方向（SortAsc 或 SortDesc）
+// 返回: (统计信息列表, 总数)
+func (h *topicManager) allTopicStatsPage(offset, limit int, order SortOrder) ([]*TopicStats, int) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	total := 0
-	for _, t := range h.topics {
-		total += t.stats().TotalJobs
+	total := h.tree.size
+	if offset >= total {
+		return nil, total
 	}
-	return total
+
+	stats := make([]*TopicStats, 0, limit)
+
+	if order == SortDesc {
+		for name := range h.tree.RangeDesc(offset, limit) {
+			if t := h.topics[name]; t != nil {
+				stats = append(stats, t.stats())
+			}
+		}
+	} else {
+		for name := range h.tree.Range(offset, limit) {
+			if t := h.topics[name]; t != nil {
+				stats = append(stats, t.stats())
+			}
+		}
+	}
+
+	return stats, total
 }
 
 // findJobByID 根据 ID 查找任务（带锁）
@@ -287,7 +347,9 @@ func (h *topicManager) put(topicName string, meta *JobMeta) (bool, error) {
 }
 
 // delete 删除任务（必须是已保留状态）
-func (h *topicManager) delete(id uint64) error {
+// delete 删除任务
+// force: true 表示强制删除（支持任何状态），false 表示仅删除 Reserved 状态的任务
+func (h *topicManager) delete(id uint64, force bool) error {
 	h.mu.Lock()
 
 	// 查找任务
@@ -297,16 +359,35 @@ func (h *topicManager) delete(id uint64) error {
 		return ErrNotFound
 	}
 
-	// 只能删除 Reserved 状态的任务
-	if meta.State != StateReserved {
+	// 非强制删除时，只能删除 Reserved 状态的任务
+	if !force && meta.State != StateReserved {
 		h.mu.Unlock()
 		return ErrInvalidState
 	}
 
 	topicName := meta.Topic
 
-	// 从 topic 移除
-	_, needsTick := topic.removeReserved(id)
+	// 根据状态从不同队列移除
+	var needsTick bool
+	if force {
+		// 强制删除：根据状态从对应队列移除
+		switch meta.State {
+		case StateReady:
+			topic.removeReady(id)
+			needsTick = topic.needsTick()
+		case StateDelayed:
+			topic.removeDelayed(id)
+			needsTick = topic.needsTick()
+		case StateReserved:
+			_, needsTick = topic.removeReserved(id)
+		case StateBuried:
+			topic.removeBuried(id)
+			needsTick = topic.needsTick()
+		}
+	} else {
+		// 普通删除：只处理 Reserved 状态
+		_, needsTick = topic.removeReserved(id)
+	}
 
 	// 如果 topic 不再需要 tick，取消注册
 	if !needsTick {

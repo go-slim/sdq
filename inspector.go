@@ -20,7 +20,7 @@ func NewInspector(queue *Queue) *Inspector {
 func (i *Inspector) Stats() *Stats {
 	allStats := i.queue.topicMgr.allTopicStats()
 
-	// 复制 stats
+	// 安全读取操作统计
 	stats := &Stats{
 		Topics:   len(allStats),
 		Puts:     atomic.LoadUint64(&i.queue.stats.Puts),
@@ -45,9 +45,19 @@ func (i *Inspector) Stats() *Stats {
 	return stats
 }
 
-// TopicStats 返回所有 Topic 的统计信息
+// TopicStats 返回所有 Topic 的统计信息（已排序）
+// 注意：当 topic 数量较多时，建议使用 TopicStatsPage 进行分页查询
 func (i *Inspector) TopicStats() []*TopicStats {
 	return i.queue.topicMgr.allTopicStats()
+}
+
+// TopicStatsPage 分页返回 Topic 的统计信息（已排序）
+// offset: 起始位置（从 0 开始）
+// limit: 返回数量
+// order: 排序方向（SortAsc 或 SortDesc）
+// 返回: (统计信息列表, 总数)
+func (i *Inspector) TopicStatsPage(offset, limit int, order SortOrder) ([]*TopicStats, int) {
+	return i.queue.topicMgr.allTopicStatsPage(offset, limit, order)
 }
 
 // WaitingStats 返回所有 topics 的等待队列统计
@@ -65,14 +75,19 @@ func (i *Inspector) WaitingStats() []WaitingStats {
 	return stats
 }
 
+// StorageStats 返回存储统计信息
+func (i *Inspector) StorageStats(ctx context.Context) (*StorageStats, error) {
+	return i.queue.storage.Stats(ctx)
+}
+
+// TickerStats 返回定时器统计信息
+func (i *Inspector) TickerStats() *TickerStats {
+	return i.queue.ticker.Stats()
+}
+
 // StartedAt 返回队列启动时间
 func (i *Inspector) StartedAt() time.Time {
 	return i.queue.startedAt
-}
-
-// Storage 返回存储后端
-func (i *Inspector) Storage() Storage {
-	return i.queue.storage
 }
 
 // StatsJob 返回指定任务的元数据
@@ -98,17 +113,43 @@ func (i *Inspector) StatsTopic(name string) (*TopicStats, error) {
 	return stats, nil
 }
 
-// ListTopics 返回所有 topic 列表
+// ListTopics 返回所有 topic 列表（已排序）
+// 注意：当 topic 数量较多时，建议使用 ListTopicsPage 进行分页查询
 func (i *Inspector) ListTopics() []string {
 	return i.queue.topicMgr.listTopics()
 }
 
-// StorageStats 返回存储统计信息
-func (i *Inspector) StorageStats(ctx context.Context) (*StorageStats, error) {
-	return i.queue.storage.Stats(ctx)
+// ListTopicsPage 分页返回 topic 列表（已排序）
+// offset: 起始位置（从 0 开始）
+// limit: 返回数量
+// order: 排序方向（SortAsc 或 SortDesc）
+// 返回: (topic 名称列表, 总数)
+func (i *Inspector) ListTopicsPage(offset, limit int, order SortOrder) ([]string, int) {
+	return i.queue.topicMgr.listTopicsPage(offset, limit, order)
 }
 
-// TickerStats 返回定时器统计信息
-func (i *Inspector) TickerStats() *TickerStats {
-	return i.queue.ticker.Stats()
+// KickJob 踢出指定的埋葬任务（使其重新进入 ready 队列）
+func (i *Inspector) KickJob(id uint64) error {
+	return i.queue.KickJob(id)
+}
+
+// DeleteJob 删除指定的任务（仅限已保留状态）
+func (i *Inspector) DeleteJob(id uint64) error {
+	return i.queue.Delete(id)
+}
+
+// ForceDeleteJob 强制删除指定的任务（支持任何状态：ready/delayed/reserved/buried）
+func (i *Inspector) ForceDeleteJob(id uint64) error {
+	return i.queue.ForceDelete(id)
+}
+
+// ListJobs 查询任务元数据列表（支持过滤和分页）
+// 这是一个底层方法，用于实现各种查询场景
+func (i *Inspector) ListJobs(ctx context.Context, filter *JobMetaFilter) (*JobMetaList, error) {
+	return i.queue.storage.ScanJobMeta(ctx, filter)
+}
+
+// GetJobBody 获取任务 Body 内容
+func (i *Inspector) GetJobBody(ctx context.Context, id uint64) ([]byte, error) {
+	return i.queue.storage.GetJobBody(ctx, id)
 }

@@ -31,17 +31,17 @@ const StatCard = ({ label, value, color = "blue" }) => {
 const TopicRow = ({ topic }) => (
   <tr className="border-b border-gray-200 dark:border-[#30363d] hover:bg-gray-50 dark:hover:bg-[#21262d]">
     <td className="px-6 py-4">
-      <a href={`/topics/${topic.Name}`} className="font-medium text-blue-600 dark:text-[#58a6ff] hover:text-blue-800 dark:hover:text-[#79c0ff]">
-        {topic.Name}
+      <a href={`topics/${topic.name}`} className="font-medium text-blue-600 dark:text-[#58a6ff] hover:text-blue-800 dark:hover:text-[#79c0ff]">
+        {topic.name}
       </a>
     </td>
-    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{topic.TotalJobs}</td>
-    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{topic.ReadyJobs}</td>
-    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{topic.ReservedJobs}</td>
-    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{topic.DelayedJobs}</td>
-    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{topic.BuriedJobs}</td>
+    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{topic.total_jobs}</td>
+    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{topic.ready_jobs}</td>
+    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{topic.reserved_jobs}</td>
+    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{topic.delayed_jobs}</td>
+    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{topic.buried_jobs}</td>
     <td className="px-6 py-4 text-center">
-      {topic.BuriedJobs > 0 && (
+      {topic.buried_jobs > 0 && (
         <button className="bg-yellow-500 text-white px-3 py-1 rounded text-sm hover:bg-yellow-600">
           Kick All
         </button>
@@ -61,8 +61,8 @@ export function Dashboard() {
   const fetchData = async () => {
     try {
       const [overviewRes, topicsRes] = await Promise.all([
-        fetch('/api/overview'),
-        fetch('/api/topics')
+        fetch('api/overview'),
+        fetch('api/topics')
       ]);
 
       if (!overviewRes.ok || !topicsRes.ok) {
@@ -160,14 +160,14 @@ export function Dashboard() {
       <section className="max-w-7xl mx-auto mb-8">
         <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-[#c9d1d9]">Queue Overview</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <StatCard label="Total Jobs" value={overview?.TotalJobs || 0} color="blue" />
-          <StatCard label="Ready Jobs" value={overview?.ReadyJobs || 0} color="green" />
-          <StatCard label="Reserved Jobs" value={overview?.ReservedJobs || 0} color="yellow" />
-          <StatCard label="Delayed Jobs" value={overview?.DelayedJobs || 0} color="yellow" />
-          <StatCard label="Buried Jobs" value={overview?.BuriedJobs || 0} color="red" />
-          <StatCard label="Topics" value={overview?.Topics || 0} color="gray" />
-          <StatCard label="Waiting Workers" value={overview?.TotalWaitingWorkers || 0} color="blue" />
-          <StatCard label="Uptime" value={formatUptime(overview?.Uptime)} color="gray" />
+          <StatCard label="Total Jobs" value={overview?.total_jobs || 0} color="blue" />
+          <StatCard label="Ready Jobs" value={overview?.ready_jobs || 0} color="green" />
+          <StatCard label="Reserved Jobs" value={overview?.reserved_jobs || 0} color="yellow" />
+          <StatCard label="Delayed Jobs" value={overview?.delayed_jobs || 0} color="yellow" />
+          <StatCard label="Buried Jobs" value={overview?.buried_jobs || 0} color="red" />
+          <StatCard label="Topics" value={overview?.total_topics || 0} color="gray" />
+          <StatCard label="Waiting Workers" value={overview?.total_waiting_workers || 0} color="blue" />
+          <StatCard label="Uptime" value={formatUptime(overview?.uptime)} color="gray" />
         </div>
       </section>
 
@@ -175,14 +175,14 @@ export function Dashboard() {
       <section className="max-w-7xl mx-auto mb-8">
         <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-[#c9d1d9]">Operation Statistics</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <StatCard label="Puts" value={overview?.Puts || 0} color="green" />
-          <StatCard label="Reserves" value={overview?.Reserves || 0} color="blue" />
-          <StatCard label="Deletes" value={overview?.Deletes || 0} color="red" />
-          <StatCard label="Releases" value={overview?.Releases || 0} color="yellow" />
-          <StatCard label="Buries" value={overview?.Buries || 0} color="red" />
-          <StatCard label="Kicks" value={overview?.Kicks || 0} color="blue" />
-          <StatCard label="Timeouts" value={overview?.Timeouts || 0} color="yellow" />
-          <StatCard label="Touches" value={overview?.Touches || 0} color="gray" />
+          <StatCard label="Puts" value={overview?.puts || 0} color="green" />
+          <StatCard label="Reserves" value={overview?.reserves || 0} color="blue" />
+          <StatCard label="Deletes" value={overview?.deletes || 0} color="red" />
+          <StatCard label="Releases" value={overview?.releases || 0} color="yellow" />
+          <StatCard label="Buries" value={overview?.buries || 0} color="red" />
+          <StatCard label="Kicks" value={overview?.kicks || 0} color="blue" />
+          <StatCard label="Timeouts" value={overview?.timeouts || 0} color="yellow" />
+          <StatCard label="Touches" value={overview?.touches || 0} color="gray" />
         </div>
       </section>
 

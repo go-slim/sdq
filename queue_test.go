@@ -93,6 +93,7 @@ func TestQueue_TryReserve(t *testing.T) {
 	meta := q.TryReserve([]string{"test-topic"})
 	if meta == nil {
 		t.Fatal("TryReserve() returned nil")
+		return // This line helps linter understand that meta is non-nil after this point
 	}
 
 	if meta.ID != id {
@@ -142,7 +143,7 @@ func TestQueue_Kick(t *testing.T) {
 
 	id, _ := q.Put("test-topic", []byte("hello"), 10, 0, 30*time.Second)
 	q.TryReserve([]string{"test-topic"})
-	q.Bury(id, 10)
+	_ = q.Bury(id, 10)
 
 	kicked, err := q.Kick("test-topic", 1)
 	if err != nil {

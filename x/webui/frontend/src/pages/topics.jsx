@@ -21,33 +21,33 @@ const StateBadge = ({ state }) => {
 
 // Topic card
 const TopicCard = ({ topic }) => (
-  <a href={`/topics/${topic.Name}`} className="block p-6 rounded-lg shadow-sm border transition-shadow bg-white dark:bg-[#161b22] border-gray-200 dark:border-[#30363d] hover:shadow-md dark:hover:bg-[#1c2128]">
+  <a href={`topics/${topic.name}`} className="block p-6 rounded-lg shadow-sm border transition-shadow bg-white dark:bg-[#161b22] border-gray-200 dark:border-[#30363d] hover:shadow-md dark:hover:bg-[#1c2128]">
     <div className="flex justify-between items-start mb-4">
-      <h3 className="text-lg font-semibold text-gray-900 dark:text-[#c9d1d9]">{topic.Name}</h3>
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-[#c9d1d9]">{topic.name}</h3>
       <StateBadge state="ready" />
     </div>
     <div className="grid grid-cols-2 gap-4 mb-4">
       <div className="text-center">
-        <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{topic.TotalJobs}</div>
+        <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{topic.total_jobs}</div>
         <div className="text-sm text-gray-500 dark:text-[#8b949e]">Total</div>
       </div>
       <div className="text-center">
-        <div className="text-2xl font-bold text-green-600 dark:text-[#3fb950]">{topic.ReadyJobs}</div>
+        <div className="text-2xl font-bold text-green-600 dark:text-[#3fb950]">{topic.ready_jobs}</div>
         <div className="text-sm text-gray-500 dark:text-[#8b949e]">Ready</div>
       </div>
       <div className="text-center">
-        <div className="text-2xl font-bold text-blue-600 dark:text-[#58a6ff]">{topic.ReservedJobs}</div>
+        <div className="text-2xl font-bold text-blue-600 dark:text-[#58a6ff]">{topic.reserved_jobs}</div>
         <div className="text-sm text-gray-500 dark:text-[#8b949e]">Reserved</div>
       </div>
       <div className="text-center">
-        <div className="text-2xl font-bold text-yellow-600 dark:text-[#d29922]">{topic.DelayedJobs}</div>
+        <div className="text-2xl font-bold text-yellow-600 dark:text-[#d29922]">{topic.delayed_jobs}</div>
         <div className="text-sm text-gray-500 dark:text-[#8b949e]">Delayed</div>
       </div>
     </div>
-    {topic.BuriedJobs > 0 && (
+    {topic.buried_jobs > 0 && (
       <div className="flex justify-between items-center">
         <div className="text-center">
-          <div className="text-2xl font-bold text-red-600 dark:text-[#f85149]">{topic.BuriedJobs}</div>
+          <div className="text-2xl font-bold text-red-600 dark:text-[#f85149]">{topic.buried_jobs}</div>
           <div className="text-sm text-gray-500 dark:text-[#8b949e]">Buried</div>
         </div>
         <button className="bg-yellow-500 text-white px-3 py-1 rounded text-sm hover:bg-yellow-600">
@@ -65,7 +65,7 @@ export function Topics() {
 
   const fetchTopics = async () => {
     try {
-      const response = await fetch('/api/topics');
+      const response = await fetch('api/topics');
       if (!response.ok) throw new Error('Failed to fetch topics');
       const data = await response.json();
       setTopics(data);
@@ -133,7 +133,7 @@ export function Topics() {
         {topics && topics.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {topics.map(topic => (
-              <TopicCard key={topic.Name} topic={topic} />
+              <TopicCard key={topic.name} topic={topic} />
             ))}
           </div>
         ) : (

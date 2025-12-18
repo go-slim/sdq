@@ -21,20 +21,20 @@ const StateBadge = ({ state }) => {
 const JobRow = ({ job }) => (
   <tr className="border-b border-gray-200 hover:bg-gray-50 dark:border-[#30363d] dark:hover:bg-[#21262d]">
     <td className="px-6 py-4">
-      <a href={`/jobs/${job.ID}`} className="font-medium text-blue-600 hover:text-blue-800 dark:text-[#58a6ff] dark:hover:text-[#79c0ff]">
-        #{job.ID}
+      <a href={`jobs/${job.id}`} className="font-medium text-blue-600 hover:text-blue-800 dark:text-[#58a6ff] dark:hover:text-[#79c0ff]">
+        #{job.id}
       </a>
     </td>
     <td className="px-6 py-4">
-      <StateBadge state={job.State} />
+      <StateBadge state={job.state} />
     </td>
-    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{job.Priority}</td>
-    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{job.Reserves}</td>
+    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{job.priority}</td>
+    <td className="px-6 py-4 text-center text-gray-900 dark:text-[#c9d1d9]">{job.reserves}</td>
     <td className="px-6 py-4 text-sm text-gray-500 dark:text-[#8b949e]">
-      {new Date(job.CreatedAt).toLocaleString()}
+      {new Date(job.created_at).toLocaleString()}
     </td>
     <td className="px-6 py-4 text-center">
-      {job.State === 'buried' && (
+      {job.state === 'buried' && (
         <button className="bg-yellow-500 text-white px-3 py-1 rounded text-sm hover:bg-yellow-600 mr-2">
           Kick
         </button>
@@ -56,7 +56,7 @@ export function TopicDetail({ topic }) {
 
   const fetchTopicData = async () => {
     try {
-      const response = await fetch(`/api/topics/${topic}`);
+      const response = await fetch(`api/topics/${topic}`);
       if (!response.ok) throw new Error('Topic not found');
       const data = await response.json();
       setTopicData(data);
@@ -76,7 +76,7 @@ export function TopicDetail({ topic }) {
         params.set('state', state);
       }
 
-      const response = await fetch(`/api/topics/${topic}/jobs?${params}`);
+      const response = await fetch(`api/topics/${topic}/jobs?${params}`);
       if (!response.ok) throw new Error('Failed to fetch jobs');
       const data = await response.json();
       setJobsData(data);
@@ -146,7 +146,7 @@ export function TopicDetail({ topic }) {
       <div className="max-w-7xl mx-auto mb-8">
         <div className="flex justify-between items-center h-16">
           <div className="flex items-center space-x-4">
-            <a href="/" className="text-gray-500 hover:text-gray-700 dark:text-[#8b949e] dark:hover:text-[#c9d1d9]">Dashboard</a>
+            <a href="" className="text-gray-500 hover:text-gray-700 dark:text-[#8b949e] dark:hover:text-[#c9d1d9]">Dashboard</a>
             <span className="text-gray-400 dark:text-[#6e7681]">/</span>
             <span className="font-semibold text-gray-900 dark:text-[#c9d1d9]">{topic}</span>
           </div>
@@ -162,23 +162,23 @@ export function TopicDetail({ topic }) {
         <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-[#c9d1d9]">Topic Statistics</h2>
         <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
           <div className="p-6 rounded-lg border text-center bg-white border-gray-200 dark:bg-[#161b22] dark:border-[#30363d]">
-            <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{topicData.TotalJobs}</div>
+            <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{topicData.total_jobs}</div>
             <div className="text-sm mt-1 text-gray-500 dark:text-[#8b949e]">Total Jobs</div>
           </div>
           <div className="p-6 rounded-lg border text-center bg-white border-gray-200 dark:bg-[#161b22] dark:border-[#30363d]">
-            <div className="text-2xl font-bold text-green-600 dark:text-[#3fb950]">{topicData.ReadyJobs}</div>
+            <div className="text-2xl font-bold text-green-600 dark:text-[#3fb950]">{topicData.ready_jobs}</div>
             <div className="text-sm mt-1 text-gray-500 dark:text-[#8b949e]">Ready</div>
           </div>
           <div className="p-6 rounded-lg border text-center bg-white border-gray-200 dark:bg-[#161b22] dark:border-[#30363d]">
-            <div className="text-2xl font-bold text-blue-600 dark:text-[#58a6ff]">{topicData.ReservedJobs}</div>
+            <div className="text-2xl font-bold text-blue-600 dark:text-[#58a6ff]">{topicData.reserved_jobs}</div>
             <div className="text-sm mt-1 text-gray-500 dark:text-[#8b949e]">Reserved</div>
           </div>
           <div className="p-6 rounded-lg border text-center bg-white border-gray-200 dark:bg-[#161b22] dark:border-[#30363d]">
-            <div className="text-2xl font-bold text-yellow-600 dark:text-[#d29922]">{topicData.DelayedJobs}</div>
+            <div className="text-2xl font-bold text-yellow-600 dark:text-[#d29922]">{topicData.delayed_jobs}</div>
             <div className="text-sm mt-1 text-gray-500 dark:text-[#8b949e]">Delayed</div>
           </div>
           <div className="p-6 rounded-lg border text-center bg-white border-gray-200 dark:bg-[#161b22] dark:border-[#30363d]">
-            <div className="text-2xl font-bold text-red-600 dark:text-[#f85149]">{topicData.BuriedJobs}</div>
+            <div className="text-2xl font-bold text-red-600 dark:text-[#f85149]">{topicData.buried_jobs}</div>
             <div className="text-sm mt-1 text-gray-500 dark:text-[#8b949e]">Buried</div>
           </div>
         </div>
@@ -188,7 +188,7 @@ export function TopicDetail({ topic }) {
       <section className="max-w-7xl mx-auto">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-4">
           <h2 className="text-xl font-semibold text-gray-900 dark:text-[#c9d1d9]">
-            Jobs ({jobsData?.Total || 0} total)
+            Jobs ({jobsData?.total || 0} total)
           </h2>
           <div className="flex flex-wrap gap-2">
             {['', 'ready', 'delayed', 'reserved', 'buried'].map(state => (
@@ -209,7 +209,7 @@ export function TopicDetail({ topic }) {
           </div>
         </div>
 
-        {jobsData?.Jobs && jobsData.Jobs.length > 0 ? (
+        {jobsData?.jobs && jobsData.jobs.length > 0 ? (
           <>
             <div className="rounded-lg shadow overflow-hidden bg-white dark:bg-[#161b22]">
               <table className="min-w-full">
@@ -224,15 +224,15 @@ export function TopicDetail({ topic }) {
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200 dark:bg-[#161b22] dark:divide-[#30363d]">
-                  {jobsData.Jobs.map(job => (
-                    <JobRow key={job.ID} job={job} />
+                  {jobsData.jobs.map(job => (
+                    <JobRow key={job.id} job={job} />
                   ))}
                 </tbody>
               </table>
             </div>
 
             {/* Pagination */}
-            {jobsData.TotalPages > 1 && (
+            {jobsData.total_pages > 1 && (
               <div className="flex justify-center items-center mt-6 space-x-2">
                 <button
                   onClick={() => setCurrentPage(1)}
@@ -257,7 +257,7 @@ export function TopicDetail({ topic }) {
                 </button>
 
                 {(() => {
-                  const totalPages = jobsData.TotalPages || 1;
+                  const totalPages = jobsData.total_pages || 1;
                   const pages = [];
                   const maxVisible = 5;
 
@@ -287,9 +287,9 @@ export function TopicDetail({ topic }) {
                 })()}
 
                 <button
-                  onClick={() => setCurrentPage(Math.min(jobsData.TotalPages, currentPage + 1))}
-                  disabled={currentPage === jobsData.TotalPages}
-                  className={`px-3 py-2 text-sm rounded ${currentPage === jobsData.TotalPages
+                  onClick={() => setCurrentPage(Math.min(jobsData.total_pages, currentPage + 1))}
+                  disabled={currentPage === jobsData.total_pages}
+                  className={`px-3 py-2 text-sm rounded ${currentPage === jobsData.total_pages
                     ? 'bg-gray-100 text-gray-400 cursor-not-allowed dark:bg-[#21262d] dark:text-[#6e7681]'
                     : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 dark:bg-[#21262d] dark:border dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#30363d]'
                     }`}
@@ -298,9 +298,9 @@ export function TopicDetail({ topic }) {
                 </button>
 
                 <button
-                  onClick={() => setCurrentPage(jobsData.TotalPages)}
-                  disabled={currentPage === jobsData.TotalPages}
-                  className={`px-3 py-2 text-sm rounded ${currentPage === jobsData.TotalPages
+                  onClick={() => setCurrentPage(jobsData.total_pages)}
+                  disabled={currentPage === jobsData.total_pages}
+                  className={`px-3 py-2 text-sm rounded ${currentPage === jobsData.total_pages
                     ? 'bg-gray-100 text-gray-400 cursor-not-allowed dark:bg-[#21262d] dark:text-[#6e7681]'
                     : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 dark:bg-[#21262d] dark:border dark:border-[#30363d] dark:text-[#c9d1d9] dark:hover:bg-[#30363d]'
                     }`}
@@ -311,9 +311,9 @@ export function TopicDetail({ topic }) {
             )}
 
             <div className="flex justify-center items-center mt-4 text-sm text-gray-600 dark:text-[#8b949e]">
-              Showing {((currentPage - 1) * (jobsData.PageSize || 20)) + 1} to{' '}
-              {Math.min(currentPage * (jobsData.PageSize || 20), jobsData.Total)} of{' '}
-              {jobsData.Total} jobs
+              Showing {((currentPage - 1) * (jobsData.page_size || 20)) + 1} to{' '}
+              {Math.min(currentPage * (jobsData.page_size || 20), jobsData.total)} of{' '}
+              {jobsData.total} jobs
             </div>
           </>
         ) : (

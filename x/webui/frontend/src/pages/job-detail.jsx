@@ -30,7 +30,7 @@ export function JobDetail({ id }) {
 
   const fetchJobData = async () => {
     try {
-      const response = await fetch(`/api/jobs/${id}`);
+      const response = await fetch(`api/jobs/${id}`);
 
       if (!response.ok) {
         if (response.status === 404) {
@@ -55,7 +55,7 @@ export function JobDetail({ id }) {
       if (!confirm(`Kick job #${id}?`)) return;
 
       try {
-        const response = await fetch(`/api/jobs/${id}/kick`, {
+        const response = await fetch(`api/jobs/${id}/kick`, {
           method: 'POST'
         });
 
@@ -72,7 +72,7 @@ export function JobDetail({ id }) {
       if (!confirm(`Delete job #${id}? This cannot be undone!`)) return;
 
       try {
-        const response = await fetch(`/api/jobs/${id}`, {
+        const response = await fetch(`api/jobs/${id}`, {
           method: 'DELETE'
         });
 
@@ -113,7 +113,7 @@ export function JobDetail({ id }) {
           <button onClick={fetchJobData} className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 mr-2">
             Retry
           </button>
-          <a href="/" className="px-4 py-2 rounded bg-gray-600 hover:bg-gray-700 text-white dark:bg-[#21262d] dark:hover:bg-[#30363d] dark:text-[#c9d1d9]">
+          <a href="" className="px-4 py-2 rounded bg-gray-600 hover:bg-gray-700 text-white dark:bg-[#21262d] dark:hover:bg-[#30363d] dark:text-[#c9d1d9]">
             Back to Dashboard
           </a>
         </div>
@@ -150,11 +150,11 @@ export function JobDetail({ id }) {
       <div className="max-w-7xl mx-auto mb-8">
         <div className="flex justify-between items-center h-16">
           <div className="flex items-center space-x-4">
-            <a href="/" className="text-gray-500 hover:text-gray-700 dark:text-[#8b949e] dark:hover:text-[#c9d1d9]">Dashboard</a>
+            <a href="" className="text-gray-500 hover:text-gray-700 dark:text-[#8b949e] dark:hover:text-[#c9d1d9]">Dashboard</a>
             <span className="text-gray-400 dark:text-[#6e7681]">/</span>
-            <a href={`/topics/${job.Topic}`} className="text-gray-500 hover:text-gray-700 dark:text-[#8b949e] dark:hover:text-[#c9d1d9]">{job.Topic}</a>
+            <a href={`topics/${job.topic}`} className="text-gray-500 hover:text-gray-700 dark:text-[#8b949e] dark:hover:text-[#c9d1d9]">{job.topic}</a>
             <span className="text-gray-400 dark:text-[#6e7681]">/</span>
-            <span className="font-semibold text-gray-900 dark:text-[#c9d1d9]">Job #{job.ID}</span>
+            <span className="font-semibold text-gray-900 dark:text-[#c9d1d9]">Job #{job.id}</span>
           </div>
           <button onClick={fetchJobData} className="px-4 py-2 rounded text-sm bg-gray-600 hover:bg-gray-700 text-white dark:bg-[#21262d] dark:hover:bg-[#30363d] dark:text-[#c9d1d9]">
             Refresh
@@ -167,11 +167,11 @@ export function JobDetail({ id }) {
         <div className="rounded-lg shadow p-6 bg-white dark:bg-[#161b22]">
           <div className="flex justify-between items-start mb-6">
             <div className="flex items-center space-x-4">
-              <h2 className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">Job #{job.ID}</h2>
-              <StateBadge state={job.State} />
+              <h2 className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">Job #{job.id}</h2>
+              <StateBadge state={job.state} />
             </div>
             <div className="flex space-x-2">
-              {job.State === 'buried' && (
+              {job.state === 'buried' && (
                 <button onClick={() => handleAction('kick')} className="bg-yellow-500 text-white px-4 py-2 rounded hover:bg-yellow-600">
                   Kick Job
                 </button>
@@ -185,35 +185,35 @@ export function JobDetail({ id }) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="flex justify-between py-2 border-b border-gray-200 dark:border-[#30363d]">
               <span className="font-medium text-gray-700 dark:text-[#8b949e]">ID</span>
-              <span className="text-gray-900 dark:text-[#c9d1d9]">#{job.ID}</span>
+              <span className="text-gray-900 dark:text-[#c9d1d9]">#{job.id}</span>
             </div>
             <div className="flex justify-between py-2 border-b border-gray-200 dark:border-[#30363d]">
               <span className="font-medium text-gray-700 dark:text-[#8b949e]">Topic</span>
-              <a href={`/topics/${job.Topic}`} className="text-blue-600 hover:text-blue-800 dark:text-[#58a6ff] dark:hover:text-[#79c0ff]">{job.Topic}</a>
+              <a href={`topics/${job.topic}`} className="text-blue-600 hover:text-blue-800 dark:text-[#58a6ff] dark:hover:text-[#79c0ff]">{job.topic}</a>
             </div>
             <div className="flex justify-between py-2 border-b border-gray-200 dark:border-[#30363d]">
               <span className="font-medium text-gray-700 dark:text-[#8b949e]">State</span>
-              <StateBadge state={job.State} />
+              <StateBadge state={job.state} />
             </div>
             <div className="flex justify-between py-2 border-b border-gray-200 dark:border-[#30363d]">
               <span className="font-medium text-gray-700 dark:text-[#8b949e]">Priority</span>
-              <span className="text-gray-900 dark:text-[#c9d1d9]">{job.Priority}</span>
+              <span className="text-gray-900 dark:text-[#c9d1d9]">{job.priority}</span>
             </div>
             <div className="flex justify-between py-2 border-b border-gray-200 dark:border-[#30363d]">
               <span className="font-medium text-gray-700 dark:text-[#8b949e]">Delay</span>
-              <span className="text-gray-900 dark:text-[#c9d1d9]">{job.Delay > 0 ? `${job.Delay}s` : 'None'}</span>
+              <span className="text-gray-900 dark:text-[#c9d1d9]">{job.delay > 0 ? `${job.delay}s` : 'None'}</span>
             </div>
             <div className="flex justify-between py-2 border-b border-gray-200 dark:border-[#30363d]">
               <span className="font-medium text-gray-700 dark:text-[#8b949e]">TTR</span>
-              <span className="text-gray-900 dark:text-[#c9d1d9]">{job.TTR}s</span>
+              <span className="text-gray-900 dark:text-[#c9d1d9]">{job.ttr}s</span>
             </div>
             <div className="flex justify-between py-2 border-b border-gray-200 dark:border-[#30363d]">
               <span className="font-medium text-gray-700 dark:text-[#8b949e]">Created At</span>
-              <span className="text-gray-900 dark:text-[#c9d1d9]">{formatDate(job.CreatedAt)}</span>
+              <span className="text-gray-900 dark:text-[#c9d1d9]">{formatDate(job.created_at)}</span>
             </div>
             <div className="flex justify-between py-2 border-b border-gray-200 dark:border-[#30363d]">
               <span className="font-medium text-gray-700 dark:text-[#8b949e]">Age</span>
-              <span className="text-gray-900 dark:text-[#c9d1d9]">{job.Age || 'Unknown'}</span>
+              <span className="text-gray-900 dark:text-[#c9d1d9]">{job.age || 'Unknown'}</span>
             </div>
           </div>
         </div>
@@ -225,27 +225,27 @@ export function JobDetail({ id }) {
           <h2 className="text-xl font-semibold mb-4 text-gray-900 dark:text-[#c9d1d9]">Statistics</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="text-center p-4 rounded bg-gray-50 dark:bg-[#0d1117]">
-              <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{job.Reserves}</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{job.reserves}</div>
               <div className="text-sm mt-1 text-gray-500 dark:text-[#8b949e]">Reserves</div>
             </div>
             <div className="text-center p-4 rounded bg-gray-50 dark:bg-[#0d1117]">
-              <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{job.Timeouts}</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{job.timeouts}</div>
               <div className="text-sm mt-1 text-gray-500 dark:text-[#8b949e]">Timeouts</div>
             </div>
             <div className="text-center p-4 rounded bg-gray-50 dark:bg-[#0d1117]">
-              <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{job.Releases}</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{job.releases}</div>
               <div className="text-sm mt-1 text-gray-500 dark:text-[#8b949e]">Releases</div>
             </div>
             <div className="text-center p-4 rounded bg-gray-50 dark:bg-[#0d1117]">
-              <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{job.Buries}</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{job.buries}</div>
               <div className="text-sm mt-1 text-gray-500 dark:text-[#8b949e]">Buries</div>
             </div>
             <div className="text-center p-4 rounded bg-gray-50 dark:bg-[#0d1117]">
-              <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{job.Kicks}</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{job.kicks}</div>
               <div className="text-sm mt-1 text-gray-500 dark:text-[#8b949e]">Kicks</div>
             </div>
             <div className="text-center p-4 rounded bg-gray-50 dark:bg-[#0d1117]">
-              <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{job.Touches}</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-[#c9d1d9]">{job.touches}</div>
               <div className="text-sm mt-1 text-gray-500 dark:text-[#8b949e]">Touches</div>
             </div>
           </div>

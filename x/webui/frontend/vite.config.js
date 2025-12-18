@@ -186,6 +186,7 @@ const mockApiRoutes = (server) => {
 };
 
 export default defineConfig({
+  base: './',  // 使用相对路径，支持任意子路径部署
   plugins: [
     tailwindcss(),
     preact(),

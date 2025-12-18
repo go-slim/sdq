@@ -445,9 +445,24 @@ func (q *Queue) Put(topic string, body []byte, priority uint32, delay, ttr time.
 // Delete 删除任务（必须是已保留状态）
 func (q *Queue) Delete(id uint64) error {
 	q.logger.Debug("deleting job", slog.Uint64("id", id))
-	err := q.topicMgr.delete(id)
+	err := q.topicMgr.delete(id, false)
 	if err != nil {
 		q.logger.Error("failed to delete job",
+			slog.Uint64("id", id),
+			slog.Any("error", err),
+		)
+		return err
+	}
+	q.stats.recordDelete()
+	return nil
+}
+
+// ForceDelete 强制删除任务（支持任何状态）
+func (q *Queue) ForceDelete(id uint64) error {
+	q.logger.Debug("force deleting job", slog.Uint64("id", id))
+	err := q.topicMgr.delete(id, true)
+	if err != nil {
+		q.logger.Error("failed to force delete job",
 			slog.Uint64("id", id),
 			slog.Any("error", err),
 		)

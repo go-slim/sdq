@@ -18,8 +18,8 @@ func TestInspector_Stats(t *testing.T) {
 	q := newTestQueue(t)
 	inspector := NewInspector(q)
 
-	q.Put("topic1", []byte("a"), 10, 0, 30*time.Second)
-	q.Put("topic2", []byte("b"), 10, 0, 30*time.Second)
+	_, _ = q.Put("topic1", []byte("a"), 10, 0, 30*time.Second)
+	_, _ = q.Put("topic2", []byte("b"), 10, 0, 30*time.Second)
 
 	stats := inspector.Stats()
 
@@ -36,8 +36,8 @@ func TestInspector_TopicStats(t *testing.T) {
 	q := newTestQueue(t)
 	inspector := NewInspector(q)
 
-	q.Put("topic1", []byte("a"), 10, 0, 30*time.Second)
-	q.Put("topic2", []byte("b"), 10, 0, 30*time.Second)
+	_, _ = q.Put("topic1", []byte("a"), 10, 0, 30*time.Second)
+	_, _ = q.Put("topic2", []byte("b"), 10, 0, 30*time.Second)
 
 	topicStats := inspector.TopicStats()
 
@@ -50,8 +50,8 @@ func TestInspector_ListTopics(t *testing.T) {
 	q := newTestQueue(t)
 	inspector := NewInspector(q)
 
-	q.Put("topic1", []byte("a"), 10, 0, 30*time.Second)
-	q.Put("topic2", []byte("b"), 10, 0, 30*time.Second)
+	_, _ = q.Put("topic1", []byte("a"), 10, 0, 30*time.Second)
+	_, _ = q.Put("topic2", []byte("b"), 10, 0, 30*time.Second)
 
 	topics := inspector.ListTopics()
 
@@ -64,7 +64,7 @@ func TestInspector_StatsTopic(t *testing.T) {
 	q := newTestQueue(t)
 	inspector := NewInspector(q)
 
-	q.Put("test-topic", []byte("a"), 10, 0, 30*time.Second)
+	_, _ = q.Put("test-topic", []byte("a"), 10, 0, 30*time.Second)
 
 	stats, err := inspector.StatsTopic("test-topic")
 	if err != nil {

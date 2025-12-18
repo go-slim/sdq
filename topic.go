@@ -42,6 +42,8 @@ func (t *topic) pushReady(meta *JobMeta) {
 }
 
 // popReady 获取并移除优先级最高的就绪任务
+//
+//nolint:unused
 func (t *topic) popReady() *JobMeta {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -78,6 +80,8 @@ func (t *topic) pushDelayed(meta *JobMeta) {
 }
 
 // popDelayed 获取并移除最早到期的延迟任务
+//
+//nolint:unused
 func (t *topic) popDelayed() *JobMeta {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -123,6 +127,8 @@ func (t *topic) removeReserved(id uint64) (*JobMeta, bool) {
 }
 
 // getReserved 获取保留任务
+//
+//nolint:unused
 func (t *topic) getReserved(id uint64) *JobMeta {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -139,6 +145,8 @@ func (t *topic) pushBuried(meta *JobMeta) {
 }
 
 // popBuried 获取并移除优先级最高的埋葬任务
+//
+//nolint:unused
 func (t *topic) popBuried() *JobMeta {
 	t.mu.Lock()
 	defer t.mu.Unlock()
