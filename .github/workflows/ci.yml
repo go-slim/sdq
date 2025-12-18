@@ -128,9 +128,9 @@ jobs:
 
       - name: Run benchmarks (Unix)
         if: runner.os != 'Windows'
-        run: go test -bench=. -benchmem -benchtime=100ms ./benchmarks/
+        run: go test -bench=. -benchmem -benchtime=100ms -run=^$ ./benchmarks/
 
       - name: Run benchmarks (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: go test -bench=. -benchmem -benchtime=100ms ./benchmarks/
+        run: go test -bench=. -benchmem -benchtime=100ms -run=^$ ./benchmarks/
