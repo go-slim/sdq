@@ -15,6 +15,19 @@ type mockTickable struct {
 	needsTick    bool
 }
 
+// sliceTickable 的动态类型不可比较，用于确保 Ticker 不会对接口值执行 ==。
+type sliceTickable []time.Time
+
+func (tickable sliceTickable) ProcessTick(time.Time) {}
+
+func (tickable sliceTickable) NextTickTime() time.Time {
+	return tickable[0]
+}
+
+func (tickable sliceTickable) NeedsTick() bool {
+	return len(tickable) > 0 && !tickable[0].IsZero()
+}
+
 func newMockTickable(nextTime time.Time) *mockTickable {
 	return &mockTickable{
 		nextTickTime: nextTime,
@@ -107,6 +120,62 @@ func TestRegister(t *testing.T) {
 	// Should not be paused after registration
 	if ticker.paused {
 		t.Error("ticker should not be paused after registration")
+	}
+}
+
+func TestProcessTickSupportsUncomparableTickable(t *testing.T) {
+	ticker := New(time.Millisecond, 8)
+	ticker.Register("slice", sliceTickable{time.Now().Add(-time.Second)})
+
+	// 旧实现会在判断当前注册项时比较两个接口值，并因切片不可比较而 panic。
+	ticker.processTick(time.Now())
+}
+
+func TestRegisterWithoutNextTickStaysPaused(t *testing.T) {
+	ticker := New(10*time.Millisecond, 100)
+	ticker.Register("test", newMockTickable(time.Time{}))
+
+	ticker.mu.RLock()
+	defer ticker.mu.RUnlock()
+	if !ticker.paused {
+		t.Fatal("ticker without a scheduled task should remain paused")
+	}
+	if len(ticker.scheduled) != 0 {
+		t.Fatalf("scheduled task count = %d, want 0", len(ticker.scheduled))
+	}
+}
+
+func TestRegisterAndWakeupKeepOneSchedulePerName(t *testing.T) {
+	ticker := New(10*time.Millisecond, 100)
+	first := newMockTickable(time.Now().Add(50 * time.Millisecond))
+	replacement := newMockTickable(time.Now().Add(60 * time.Millisecond))
+
+	ticker.Register("test", first)
+	ticker.Register("test", replacement)
+	assertScheduledCount(t, ticker, "test", 1)
+	if ticker.registry["test"] != replacement {
+		t.Fatal("expected replacement tickable to be registered")
+	}
+
+	ticker.Wakeup()
+	assertScheduledCount(t, ticker, "test", 1)
+}
+
+func assertScheduledCount(t *testing.T, ticker *Ticker, name string, want int) {
+	t.Helper()
+	ticker.mu.RLock()
+	defer ticker.mu.RUnlock()
+
+	got := 0
+	for _, tasks := range ticker.wheel {
+		for _, task := range tasks {
+			if task.name == name {
+				got++
+			}
+		}
+	}
+	if got != want {
+		t.Fatalf("scheduled %q count = %d, want %d", name, got, want)
 	}
 }
 
@@ -283,21 +352,19 @@ func TestCalculateSlot(t *testing.T) {
 func TestHasAnyTask(t *testing.T) {
 	ticker := New(10*time.Millisecond, 10)
 
-	ticker.mu.Lock()
+	ticker.mu.RLock()
 	if ticker.hasAnyTask() {
 		t.Error("hasAnyTask should return false for empty wheel")
 	}
+	ticker.mu.RUnlock()
 
-	// Add a task to the wheel
-	ticker.wheel[0] = append(ticker.wheel[0], &tickTask{
-		name:     "test",
-		tickable: newMockTickable(time.Now()),
-	})
+	ticker.Register("test", newMockTickable(time.Now()))
 
+	ticker.mu.RLock()
+	defer ticker.mu.RUnlock()
 	if !ticker.hasAnyTask() {
 		t.Error("hasAnyTask should return true when tasks exist")
 	}
-	ticker.mu.Unlock()
 }
 
 func TestRemoveTask(t *testing.T) {

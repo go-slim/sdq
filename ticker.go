@@ -4,8 +4,14 @@ import (
 	"time"
 )
 
-// Tickable 可被 tick 的对象接口
-// Topic 实现此接口以接收 tick 通知
+// Tickable 可被 Ticker 调度，Topic 实现此接口以接收时间推进通知。
+//
+// Ticker 可能在 Register、Wakeup、Stats 和调度循环中读取下一次时间，因此实现必须允许
+// NextTickTime 与自身的状态更新并发执行，并应快速返回。为兼容不同 Ticker 实现，三个方法
+// 都不应回调注册自己的同一个 Ticker；部分实现会在调度锁内读取下一次时间。
+//
+// Register 或 Unregister 会阻止尚未选中的后续调度，但一个已经选中的 ProcessTick 可能与
+// 注册表变更并发完成。Tickable 必须自行保证该情况安全。
 type Tickable interface {
 	// ProcessTick 处理 tick 通知
 	ProcessTick(now time.Time)
@@ -18,8 +24,10 @@ type Tickable interface {
 	NeedsTick() bool
 }
 
-// Ticker 定时器接口
-// 负责定时触发已注册对象的 ProcessTick 方法
+// Ticker 定时器接口，负责定时触发已注册对象的 ProcessTick 方法。
+//
+// Queue 对一个 Ticker 只调用一次 Start 和一次 Stop；自定义实现可以依赖这一生命周期，
+// 无需支持停止后重新启动。
 type Ticker interface {
 	// Name 返回定时器名称
 	Name() string
@@ -30,13 +38,14 @@ type Ticker interface {
 	// Stop 停止定时器
 	Stop()
 
-	// Register 注册需要 tick 的对象
+	// Register 注册需要 tick 的对象。同名注册必须替换旧对象，并按新对象的
+	// NextTickTime 重新调度。
 	Register(name string, tickable Tickable)
 
 	// Unregister 取消注册
 	Unregister(name string)
 
-	// Wakeup 唤醒定时器（新任务加入时）
+	// Wakeup 通知定时器已注册对象的 NextTickTime 可能发生变化，并要求尽快重新计算调度。
 	Wakeup()
 
 	// Stats 返回统计信息

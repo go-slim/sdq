@@ -1,5 +1,9 @@
 // Package dynsleep provides a dynamic sleep ticker implementation.
 // It calculates sleep duration dynamically based on the nearest expiration time.
+//
+// ProcessTick panics are recovered so one Tickable cannot stop the scheduler. The ticker has no logging
+// dependency and does not report the recovered value; Tickable implementations that need diagnostics
+// should recover and report their own panic.
 package dynsleep
 
 import (
@@ -19,13 +23,15 @@ type cachedTickable struct {
 	mu       sync.RWMutex
 	tickable sdq.Tickable
 	nextTime time.Time
-	dirty    bool // Whether recalculation is needed
+	dirty    bool   // Whether recalculation is needed
+	revision uint64 // Incremented for every invalidation to avoid losing a concurrent Wakeup
 }
 
 // markDirty marks the cache as needing recalculation.
 func (ct *cachedTickable) markDirty() {
 	ct.mu.Lock()
 	ct.dirty = true
+	ct.revision++
 	ct.mu.Unlock()
 }
 
@@ -34,6 +40,7 @@ func (ct *cachedTickable) getNextTime() time.Time {
 	ct.mu.RLock()
 	dirty := ct.dirty
 	nextTime := ct.nextTime
+	revision := ct.revision
 	ct.mu.RUnlock()
 
 	if dirty {
@@ -41,8 +48,12 @@ func (ct *cachedTickable) getNextTime() time.Time {
 		newNextTime := ct.tickable.NextTickTime()
 
 		ct.mu.Lock()
-		ct.nextTime = newNextTime
-		ct.dirty = false
+		// A Wakeup may have invalidated the cache while NextTickTime was running.
+		// Preserve that newer dirty state so the next scheduler pass recalculates again.
+		if ct.revision == revision {
+			ct.nextTime = newNextTime
+			ct.dirty = false
+		}
 		ct.mu.Unlock()
 
 		return newNextTime
@@ -53,9 +64,7 @@ func (ct *cachedTickable) getNextTime() time.Time {
 
 // setNextTimeAndMarkDirty updates state after processing a tick.
 func (ct *cachedTickable) setNextTimeAndMarkDirty() {
-	ct.mu.Lock()
-	ct.dirty = true
-	ct.mu.Unlock()
+	ct.markDirty()
 }
 
 // Ticker is a dynamic sleep mode ticker.
@@ -110,41 +119,34 @@ func (w *Ticker) Stop() {
 	w.wg.Wait()
 }
 
-// Register registers an object.
+// Register registers an object. Registering the same name replaces the previous
+// object and interrupts the current sleep so the new schedule takes effect.
 func (w *Ticker) Register(name string, tickable sdq.Tickable) {
+	// Call NextTickTime outside lock to avoid deadlock with Tickable implementations.
+	nextTime := tickable.NextTickTime()
+
 	w.mu.Lock()
-	_, exists := w.registry[name]
+	w.registry[name] = &cachedTickable{
+		tickable: tickable,
+		nextTime: nextTime,
+	}
 	w.mu.Unlock()
 
-	if !exists {
-		// Call NextTickTime outside lock to avoid deadlock
-		nextTime := tickable.NextTickTime()
-
-		w.mu.Lock()
-		// Check again to prevent concurrent registration
-		if _, exists := w.registry[name]; !exists {
-			w.registry[name] = &cachedTickable{
-				tickable: tickable,
-				nextTime: nextTime,
-				dirty:    false,
-			}
-		}
-		w.mu.Unlock()
-
-		// Wakeup outside lock to avoid lock reentry
-		w.wakeup()
-	}
+	// Register also refreshes an existing name, so the current sleep must be interrupted.
+	w.wakeup()
 }
 
 // Unregister unregisters an object.
 func (w *Ticker) Unregister(name string) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	delete(w.registry, name)
+	w.mu.Unlock()
+
+	// Interrupt a sleep based on the removed object's old deadline.
+	w.wakeup()
 }
 
-// Wakeup wakes up the ticker (public method).
+// Wakeup invalidates cached deadlines and interrupts the current sleep.
 func (w *Ticker) Wakeup() {
 	// Mark all caches as dirty to force recalculation
 	w.mu.RLock()
@@ -293,11 +295,7 @@ func (w *Ticker) processTick() {
 		// Panic recovery protection
 		func() {
 			defer func() {
-				if r := recover(); r != nil {
-					// Log panic but don't affect other task processing
-					// TODO: Add logging
-					_ = r
-				}
+				_ = recover()
 			}()
 			ct.tickable.ProcessTick(now)
 		}()

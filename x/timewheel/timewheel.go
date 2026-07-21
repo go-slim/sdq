@@ -1,5 +1,9 @@
 // Package timewheel provides a time wheel ticker implementation.
 // It uses fixed interval ticks for higher time precision.
+//
+// ProcessTick panics are recovered so one Tickable cannot stop the scheduler. The ticker has no logging
+// dependency and does not report the recovered value; Tickable implementations that need diagnostics
+// should recover and report their own panic.
 package timewheel
 
 import (
@@ -18,6 +22,7 @@ type tickTask struct {
 	name     string
 	tickable sdq.Tickable
 	tickTime time.Time
+	slot     int
 }
 
 // Ticker is a time wheel mode ticker.
@@ -25,6 +30,7 @@ type tickTask struct {
 type Ticker struct {
 	mu           sync.RWMutex
 	registry     map[string]sdq.Tickable // Registered objects
+	scheduled    map[string]*tickTask    // Authoritative wheel entry for each name
 	tickInterval time.Duration           // Fixed tick interval
 	slots        int                     // Number of time slots
 
@@ -60,6 +66,7 @@ func New(tickInterval time.Duration, slots int) *Ticker {
 
 	return &Ticker{
 		registry:     make(map[string]sdq.Tickable),
+		scheduled:    make(map[string]*tickTask),
 		tickInterval: tickInterval,
 		slots:        slots,
 		ctx:          ctx,
@@ -95,16 +102,18 @@ func (w *Ticker) Stop() {
 	w.wg.Wait()
 }
 
-// Register registers an object.
+// Register registers an object. Registering the same name removes the previous
+// wheel entry before scheduling the replacement.
 func (w *Ticker) Register(name string, tickable sdq.Tickable) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	w.removeTask(name)
 	w.registry[name] = tickable
 	w.scheduleTask(name, tickable)
 
-	// If previously paused, resume now
-	if w.paused {
+	// Only resume when registration actually scheduled a task.
+	if w.paused && w.hasAnyTask() {
 		w.paused = false
 		select {
 		case w.resumeChan <- struct{}{}:
@@ -126,12 +135,17 @@ func (w *Ticker) Unregister(name string) {
 	w.checkAndPause()
 }
 
-// Wakeup wakes up the ticker (time wheel mode doesn't need wakeup).
+// Wakeup rebuilds the wheel from every registered object's current deadline.
 func (w *Ticker) Wakeup() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	// Reschedule all tasks
+	// Rebuild the wheel so changed NextTickTime values take effect immediately.
+	w.wheel = make([][]*tickTask, w.slots)
+	for i := range w.wheel {
+		w.wheel[i] = make([]*tickTask, 0)
+	}
+	clear(w.scheduled)
 	for name, tickable := range w.registry {
 		w.scheduleTask(name, tickable)
 	}
@@ -146,7 +160,6 @@ func (w *Ticker) Wakeup() {
 	}
 }
 
-// Stats returns ticker statistics.
 // Name returns the ticker name.
 func (w *Ticker) Name() string {
 	return "timewheel"
@@ -206,6 +219,11 @@ func (w *Ticker) processTick(now time.Time) {
 	// Get tasks in current slot
 	tasks := w.wheel[w.currentSlot]
 	w.wheel[w.currentSlot] = make([]*tickTask, 0)
+	for _, task := range tasks {
+		if w.scheduled[task.name] == task {
+			task.slot = -1
+		}
+	}
 
 	// Move to next slot
 	w.currentSlot = (w.currentSlot + 1) % w.slots
@@ -214,31 +232,39 @@ func (w *Ticker) processTick(now time.Time) {
 
 	// Process tasks
 	for _, task := range tasks {
+		// A concurrent Register, Unregister, or Wakeup can supersede an entry after it
+		// was removed from the slot. Only the map's current identity may run or reschedule.
+		w.mu.RLock()
+		current := w.scheduled[task.name] == task
+		w.mu.RUnlock()
+		if !current {
+			continue
+		}
+
 		// Check if really expired
 		if !task.tickTime.After(now) {
 			// Panic recovery protection
 			func() {
 				defer func() {
-					if r := recover(); r != nil {
-						// Log panic but don't affect other task processing
-						// TODO: Add logging
-						_ = r
-					}
+					_ = recover()
 				}()
 				task.tickable.ProcessTick(now)
 			}()
 
 			// Reschedule
 			w.mu.Lock()
-			if _, exists := w.registry[task.name]; exists {
-				w.scheduleTask(task.name, task.tickable)
+			if w.scheduled[task.name] == task {
+				w.scheduleTask(task.name, w.registry[task.name])
 			}
 			w.mu.Unlock()
 		} else {
 			// Not yet expired, re-add to slot
 			w.mu.Lock()
-			slot := w.calculateSlot(task.tickTime)
-			w.wheel[slot] = append(w.wheel[slot], task)
+			if w.scheduled[task.name] == task {
+				slot := w.calculateSlot(task.tickTime)
+				task.slot = slot
+				w.wheel[slot] = append(w.wheel[slot], task)
+			}
 			w.mu.Unlock()
 		}
 	}
@@ -259,38 +285,44 @@ func (w *Ticker) processTick(now time.Time) {
 func (w *Ticker) scheduleTask(name string, tickable sdq.Tickable) {
 	nextTime := tickable.NextTickTime()
 	if nextTime.IsZero() {
+		delete(w.scheduled, name)
 		return
 	}
 
 	slot := w.calculateSlot(nextTime)
-	w.wheel[slot] = append(w.wheel[slot], &tickTask{
+	task := &tickTask{
 		name:     name,
 		tickable: tickable,
 		tickTime: nextTime,
-	})
+		slot:     slot,
+	}
+	w.scheduled[name] = task
+	w.wheel[slot] = append(w.wheel[slot], task)
 }
 
 // removeTask removes a task from the time wheel (requires holding the lock).
 func (w *Ticker) removeTask(name string) {
-	for i := range w.wheel {
-		newTasks := make([]*tickTask, 0)
-		for _, task := range w.wheel[i] {
-			if task.name != name {
-				newTasks = append(newTasks, task)
-			}
+	task := w.scheduled[name]
+	delete(w.scheduled, name)
+	if task == nil || task.slot < 0 || task.slot >= len(w.wheel) {
+		return
+	}
+
+	tasks := w.wheel[task.slot]
+	for i, candidate := range tasks {
+		if candidate != task {
+			continue
 		}
-		w.wheel[i] = newTasks
+		copy(tasks[i:], tasks[i+1:])
+		tasks[len(tasks)-1] = nil
+		w.wheel[task.slot] = tasks[:len(tasks)-1]
+		return
 	}
 }
 
 // hasAnyTask checks if the time wheel has any tasks (requires holding the lock).
 func (w *Ticker) hasAnyTask() bool {
-	for i := range w.wheel {
-		if len(w.wheel[i]) > 0 {
-			return true
-		}
-	}
-	return false
+	return len(w.scheduled) > 0
 }
 
 // checkAndPause checks if should pause (requires holding the lock).

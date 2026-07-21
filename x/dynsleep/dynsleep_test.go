@@ -3,6 +3,7 @@ package dynsleep
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -152,6 +153,77 @@ func TestRegisterAndTick(t *testing.T) {
 	stats = ticker.Stats()
 	if stats.RegisteredCount != 0 {
 		t.Errorf("RegisteredCount after unregister = %d, want 0", stats.RegisteredCount)
+	}
+}
+
+func TestRegisterReplacesExistingTickable(t *testing.T) {
+	ticker := New(10*time.Millisecond, time.Second)
+	first := newMockTickable(time.Now().Add(time.Hour))
+	replacement := newMockTickable(time.Now().Add(-time.Second))
+
+	ticker.Register("test", first)
+	ticker.Register("test", replacement)
+	ticker.Start()
+	defer ticker.Stop()
+
+	time.Sleep(50 * time.Millisecond)
+	if first.GetTickCount() != 0 {
+		t.Fatal("replaced tickable should not be processed")
+	}
+	if replacement.GetTickCount() == 0 {
+		t.Fatal("replacement tickable should be processed")
+	}
+}
+
+type blockingTickable struct {
+	started chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (b *blockingTickable) ProcessTick(time.Time) {}
+
+func (b *blockingTickable) NextTickTime() time.Time {
+	if b.calls.Add(1) == 1 {
+		close(b.started)
+		<-b.release
+	}
+	return time.Now().Add(time.Hour)
+}
+
+func (b *blockingTickable) NeedsTick() bool { return true }
+
+func TestCachedTickablePreservesConcurrentInvalidation(t *testing.T) {
+	tickable := &blockingTickable{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	cached := &cachedTickable{
+		tickable: tickable,
+		dirty:    true,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		cached.getNextTime()
+		close(done)
+	}()
+
+	<-tickable.started
+	cached.markDirty()
+	close(tickable.release)
+	<-done
+
+	cached.mu.RLock()
+	dirty := cached.dirty
+	cached.mu.RUnlock()
+	if !dirty {
+		t.Fatal("concurrent invalidation was lost during deadline recalculation")
+	}
+
+	cached.getNextTime()
+	if calls := tickable.calls.Load(); calls != 2 {
+		t.Fatalf("NextTickTime calls = %d, want 2", calls)
 	}
 }
 
