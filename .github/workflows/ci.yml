@@ -2,135 +2,108 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
+    branches: [main]
   workflow_dispatch:
 
-# Cancel in-progress runs for the same branch
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  GO_VERSION: "1.25"
 
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: ${{ !env.ACT }}
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Check frontend modules
+        shell: bash
+        # WebUI is buildless; this only checks per-file syntax. Handler tests cover embedded paths,
+        # while importmap resolution and CDN/browser runtime still require a separate smoke test.
+        run: find x/webui/frontend/src -type f -name '*.js' -print0 | xargs -0 -n1 node --check
 
       - name: Run golangci-lint
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.6.2 run --timeout=5m
 
   test:
-    name: Test
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: ${{ !env.ACT }}
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
-      - name: Install dependencies
-        run: go mod download
-
-      - name: Run tests (Unix)
-        if: runner.os != 'Windows'
-        run: go test -v -race -short -coverprofile coverage.out -covermode atomic ./...
-
-      - name: Run tests (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: go test -v -race -short -coverprofile coverage.out -covermode atomic ./...
+      - name: Run tests
+        run: go test -v -race -short -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        if: ${{ runner.os == 'Linux' && !env.ACT }}
+        uses: codecov/codecov-action@v6
         with:
           files: ./coverage.out
           fail_ci_if_error: false
-        if: ${{ !env.ACT }}
 
   build:
-    name: Build
+    name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: ${{ !env.ACT }}
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build
         run: go build -v ./...
 
-      - name: Build examples (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          for dir in examples/*/; do
-            echo "Building $dir..."
-            (cd "$dir" && go build -v .)
-          done
-
-      - name: Build examples (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Get-ChildItem -Directory examples | ForEach-Object {
-            Write-Host "Building $($_.FullName)..."
-            Push-Location $_.FullName
-            go build -v .
-            Pop-Location
-          }
-
   benchmark:
     name: Benchmark
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    # Only run benchmarks on main branch or when explicitly requested
     if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: ${{ !env.ACT }}
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
-      - name: Run benchmarks (Unix)
-        if: runner.os != 'Windows'
-        run: go test -bench=. -benchmem -benchtime=100ms -run=^$ ./benchmarks/
-
-      - name: Run benchmarks (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
+      - name: Run benchmarks
         run: go test -bench=. -benchmem -benchtime=100ms -run=^$ ./benchmarks/
