@@ -60,6 +60,11 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Run tests
+        if: runner.os != 'Linux'
+        run: go test -v -race -short ./...
+
+      - name: Run tests with coverage
+        if: runner.os == 'Linux'
         run: go test -v -race -short -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage
