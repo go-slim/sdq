@@ -32,6 +32,9 @@ Thumbs.db
 *.db-wal
 *.db-shm
 
+# Local example binaries
+/examples/webui/webui-example
+
 # TODO files (internal planning, not for version control)
 TODOs.md
 reports/
