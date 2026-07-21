@@ -1,0 +1,128 @@
+:root {
+  --accent-solid: var(--color-indigo);
+  --accent-foreground: var(--accent-solid);
+  --accent-hover: color-mix(in oklab, var(--accent-solid) 84%, black);
+  --accent-soft: color-mix(in oklab, var(--accent-solid) 12%, white);
+  --accent-border: color-mix(in oklab, var(--accent-solid) 42%, white);
+  --accent-on: white;
+}
+
+:root[data-accent="red"] {
+  --accent-solid: var(--color-red);
+}
+
+:root[data-accent="amber"] {
+  --accent-solid: var(--color-amber);
+  --accent-on: #111827;
+}
+
+:root[data-accent="lime"] {
+  --accent-solid: var(--color-lime);
+  --accent-on: #111827;
+}
+
+:root[data-accent="emerald"] {
+  --accent-solid: var(--color-emerald);
+}
+
+:root[data-accent="fuchsia"] {
+  --accent-solid: var(--color-fuchsia);
+}
+
+html.dark {
+  --accent-foreground: color-mix(in oklab, var(--accent-solid) 72%, white);
+  --accent-hover: color-mix(in oklab, var(--accent-solid) 84%, white);
+  --accent-soft: color-mix(in oklab, var(--accent-solid) 20%, transparent);
+  --accent-border: color-mix(in oklab, var(--accent-solid) 58%, #30363d);
+}
+
+.accent-solid {
+  color: var(--accent-on);
+  background-color: var(--accent-solid);
+}
+
+.accent-solid:not(:disabled):hover {
+  background-color: var(--accent-hover);
+}
+
+.accent-text {
+  color: var(--accent-foreground);
+}
+
+.accent-text:hover {
+  color: var(--accent-hover);
+}
+
+.accent-surface {
+  color: var(--accent-foreground);
+  background-color: var(--accent-soft);
+}
+
+.accent-border {
+  border-color: var(--accent-border);
+}
+
+.accent-input {
+  accent-color: var(--accent-solid);
+}
+
+.accent-icon {
+  color: var(--accent-foreground);
+  background-color: var(--accent-soft);
+}
+
+.language-icon path {
+  opacity: 0.35;
+  transition:
+    opacity 150ms ease,
+    stroke 150ms ease;
+}
+
+.language-icon.is-zh path:nth-child(-n + 4),
+.language-icon.is-en path:nth-child(n + 5) {
+  stroke: var(--accent-foreground);
+  opacity: 1;
+}
+
+.accent-spinner {
+  border-color: var(--accent-soft);
+  border-top-color: var(--accent-solid);
+}
+
+.accent-focus:focus {
+  border-color: var(--accent-solid);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent-solid) 35%, transparent);
+  outline: none;
+}
+
+.theme-mode-card.is-active {
+  border-color: color-mix(in oklab, var(--theme-accent) 48%, white);
+}
+
+.theme-mode-card.is-active .theme-mode-header {
+  border-color: color-mix(in oklab, var(--theme-accent) 48%, white);
+  background-color: color-mix(in oklab, var(--theme-accent) 12%, white);
+}
+
+.dark .theme-mode-card.is-active {
+  border-color: color-mix(in oklab, var(--theme-accent) 56%, #30363d);
+}
+
+.dark .theme-mode-card.is-active .theme-mode-header {
+  border-color: color-mix(in oklab, var(--theme-accent) 56%, #30363d);
+  background-color: color-mix(in oklab, var(--theme-accent) 18%, transparent);
+}
+
+.theme-mode-active {
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+}
+
+.theme-preview-accent-dot,
+.theme-preview-accent-bar {
+  background-color: var(--preview-accent);
+}
+
+.theme-preview-accent-soft {
+  background-color: color-mix(in oklab, var(--preview-accent) 22%, transparent);
+}

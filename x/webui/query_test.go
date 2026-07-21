@@ -538,6 +538,10 @@ func TestQuery_DeleteAllBuriedJobs(t *testing.T) {
 			t.Fatalf("bury failed: %v", err)
 		}
 	}
+	readyID, err := q.Put("test", []byte("must stay ready"), 0, 0, 30*time.Second)
+	if err != nil {
+		t.Fatalf("put ready job: %v", err)
+	}
 
 	// 验证 buried 任务数量
 	overview := query.Overview()
@@ -554,9 +558,12 @@ func TestQuery_DeleteAllBuriedJobs(t *testing.T) {
 		t.Errorf("expected 3 deleted, got %d", deleted)
 	}
 
-	// 验证没有任务了
+	// 只删除扫描到的 buried ID，不能因优先级而误删原本的 ready 任务。
 	overview = query.Overview()
-	if overview.TotalJobs != 0 {
-		t.Errorf("expected 0 total jobs, got %d", overview.TotalJobs)
+	if overview.TotalJobs != 1 || overview.ReadyJobs != 1 || overview.BuriedJobs != 0 {
+		t.Errorf("unexpected overview after delete: %#v", overview)
+	}
+	if _, err := q.Peek(readyID); err != nil {
+		t.Fatalf("ready job was deleted: %v", err)
 	}
 }

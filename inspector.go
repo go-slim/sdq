@@ -149,6 +149,13 @@ func (i *Inspector) ListJobs(ctx context.Context, filter *JobMetaFilter) (*JobMe
 	return i.queue.storage.ScanJobMeta(ctx, filter)
 }
 
+// CountJobs 返回符合 Topic 和 State 条件的任务数。
+//
+// Limit、Offset 和 Cursor 不参与统计；这些字段只用于 ListJobs 分页。
+func (i *Inspector) CountJobs(ctx context.Context, filter *JobMetaFilter) (int, error) {
+	return i.queue.storage.CountJobs(ctx, filter)
+}
+
 // GetJobBody 获取任务 Body 内容
 func (i *Inspector) GetJobBody(ctx context.Context, id uint64) ([]byte, error) {
 	return i.queue.storage.GetJobBody(ctx, id)

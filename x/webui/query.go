@@ -1,4 +1,3 @@
-// Package inspector 提供任务查询能力，方便实时 UI 展示
 package webui
 
 import (
@@ -9,12 +8,11 @@ import (
 	"go-slim.dev/sdq"
 )
 
-// Query 提供任务查询能力，方便实时 UI 展示
-// 设计原则：
-// - 只读操作，不修改任务状态
-// - 支持分页和过滤
-// - 提供聚合统计
-// - 线程安全
+// Query 为 WebUI 提供查询、聚合统计和队列管理操作。
+//
+// List、Get、Overview 和 Storage 等查询不会修改任务；Kick、Delete 等方法会直接修改运行中
+// Queue。各聚合结果由多个并发安全的读取组成，但不是事务快照，高并发下相邻字段可能来自
+// 略有差异的时刻。
 type Query struct {
 	inspector *sdq.Inspector
 	queue     *sdq.Queue
@@ -116,7 +114,29 @@ type QueueOverview struct {
 	StartedAt time.Time `json:"started_at"`
 }
 
-// JobFilter 任务查询条件
+// StorageInfo 是 Storage.Stats 返回的实际存储状态以及队列运行时间。
+//
+// Storage 接口不暴露文件路径、数据库连接数、备份状态等实现细节，因此这里不会推测或
+// 填充这些信息。
+type StorageInfo struct {
+	Name           string    `json:"name"`
+	TotalJobs      int64     `json:"total_jobs"`
+	TotalTopics    int       `json:"total_topics"`
+	MetaSize       int64     `json:"meta_size"`
+	BodySize       int64     `json:"body_size"`
+	TotalSize      int64     `json:"total_size"`
+	AvgMetaSize    int64     `json:"avg_meta_size"`
+	AvgBodySize    int64     `json:"avg_body_size"`
+	LoadedMetaSize int64     `json:"loaded_meta_size"`
+	LoadedBodySize int64     `json:"loaded_body_size"`
+	StartedAt      time.Time `json:"started_at"`
+	Uptime         string    `json:"uptime"`
+}
+
+// JobFilter 任务查询条件。
+//
+// Storage 接口只规定按 ID 升序分页，因此 OrderBy 和 Order 只对当前页生效，不是对完整结果集
+// 排序后再分页。需要稳定的全局排序时，应扩展 Storage 查询契约，而不是依赖这两个字段。
 type JobFilter struct {
 	Topic    string     `json:"topic,omitempty"`     // 按 Topic 过滤
 	State    *sdq.State `json:"state,omitempty"`     // 按状态过滤
@@ -160,6 +180,30 @@ func (q *Query) Overview() *QueueOverview {
 		StartedAt:           q.inspector.StartedAt(),
 		Uptime:              time.Since(q.inspector.StartedAt()).Round(time.Second).String(),
 	}
+}
+
+// Storage 返回当前存储实现报告的真实统计信息。
+func (q *Query) Storage(ctx context.Context) (*StorageInfo, error) {
+	stats, err := q.inspector.StorageStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	startedAt := q.inspector.StartedAt()
+	return &StorageInfo{
+		Name:           stats.Name,
+		TotalJobs:      stats.TotalJobs,
+		TotalTopics:    stats.TotalTopics,
+		MetaSize:       stats.MetaSize,
+		BodySize:       stats.BodySize,
+		TotalSize:      stats.TotalSize,
+		AvgMetaSize:    stats.AvgMetaSize,
+		AvgBodySize:    stats.AvgBodySize,
+		LoadedMetaSize: stats.LoadedMetaSize,
+		LoadedBodySize: stats.LoadedBodySize,
+		StartedAt:      startedAt,
+		Uptime:         time.Since(startedAt).Round(time.Second).String(),
+	}, nil
 }
 
 // ListTopics 获取所有 Topic 列表
@@ -223,7 +267,10 @@ func (q *Query) GetTopic(name string) (*TopicInfo, error) {
 	}, nil
 }
 
-// ListJobs 查询任务列表
+// ListJobs 查询任务列表。
+//
+// 返回的 Total 来自一次独立计数查询，并非与列表读取组成事务快照；高并发状态变化下二者
+// 可能存在短暂差异。OrderBy 和 Order 仅重排当前页。
 func (q *Query) ListJobs(ctx context.Context, query *JobFilter) (*JobListResult, error) {
 	if query == nil {
 		query = &JobFilter{}
@@ -281,18 +328,14 @@ func (q *Query) ListJobs(ctx context.Context, query *JobFilter) (*JobListResult,
 	// 排序
 	q.sortJobs(jobs, query.OrderBy, query.Order)
 
-	// 计算总数和总页数
-	total := list.Total
-	if total == 0 {
-		// 如果 Storage 不支持返回总数，使用 ListJobs 获取总数
-		countList, err := q.inspector.ListJobs(ctx, &sdq.JobMetaFilter{
-			Topic: query.Topic,
-			State: query.State,
-			Limit: 0, // 只获取总数
-		})
-		if err == nil {
-			total = countList.Total
-		}
+	// JobMetaList.Total 对 Storage 是可选的，且 0 无法区分“空集合”和“未提供”。
+	// 展示分页需要精确总数，因此显式调用 CountJobs，避免把当前页大小当成总数。
+	total, err := q.inspector.CountJobs(ctx, &sdq.JobMetaFilter{
+		Topic: query.Topic,
+		State: query.State,
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	totalPages := (total + query.PageSize - 1) / query.PageSize
@@ -396,8 +439,13 @@ func (q *Query) ListBuriedJobs(ctx context.Context, page, pageSize int) (*JobLis
 // 批量操作（管理功能）
 // ============================================================
 
-// DeleteAllBuriedJobs 删除所有已埋葬的任务
-// 注意：这会先 kick 任务到 ready 状态，再 reserve 并删除
+// DeleteAllBuriedJobs 删除匹配 Topic 的全部已埋葬任务。
+//
+// 该操作不可逆，并且与队列的其他操作不构成事务。方法按扫描到的精确 ID 删除，
+// 不会先将任务转为 Ready，因此不会误取同 Topic 中的其他就绪任务。任务在扫描后若被
+// 其他 goroutine 改变状态，ForceDelete 仍会删除该 ID。中途失败时返回已删除数量和错误，
+// 已完成的删除不会回滚。扫描没有固定快照，并发新增的埋葬任务也可能被纳入本次操作；
+// 持续写入会延长完成时间。
 func (q *Query) DeleteAllBuriedJobs(ctx context.Context, topic string) (int, error) {
 	state := sdq.StateBuried
 	filter := &sdq.JobMetaFilter{
@@ -417,27 +465,24 @@ func (q *Query) DeleteAllBuriedJobs(ctx context.Context, topic string) (int, err
 			break
 		}
 
-		// 先 kick 所有任务到 ready 状态
 		for _, meta := range list.Metas {
-			_ = q.inspector.KickJob(meta.ID)
-		}
-
-		// 然后 reserve 并删除
-		for range list.Metas {
-			job, err := q.queue.Reserve([]string{topic}, 100*time.Millisecond)
-			if err != nil || job == nil {
-				break
+			if err := ctx.Err(); err != nil {
+				return deleted, err
 			}
-			if err := job.Delete(); err == nil {
-				deleted++
+			if err := q.inspector.ForceDeleteJob(meta.ID); err != nil {
+				return deleted, err
 			}
+			deleted++
 		}
 	}
 
 	return deleted, nil
 }
 
-// KickAllBuriedJobs 踢出所有已埋葬的任务
+// KickAllBuriedJobs 踢出匹配 Topic 的全部已埋葬任务。
+//
+// 该操作不是事务。中途失败时返回已踢出数量和首个错误，已完成的状态变化不会回滚。
+// 扫描没有固定快照，并发新增的埋葬任务也可能被纳入本次操作；持续写入会延长完成时间。
 func (q *Query) KickAllBuriedJobs(ctx context.Context, topic string) (int, error) {
 	state := sdq.StateBuried
 	filter := &sdq.JobMetaFilter{
@@ -458,9 +503,13 @@ func (q *Query) KickAllBuriedJobs(ctx context.Context, topic string) (int, error
 		}
 
 		for _, meta := range list.Metas {
-			if err := q.inspector.KickJob(meta.ID); err == nil {
-				kicked++
+			if err := ctx.Err(); err != nil {
+				return kicked, err
 			}
+			if err := q.inspector.KickJob(meta.ID); err != nil {
+				return kicked, err
+			}
+			kicked++
 		}
 	}
 
@@ -483,7 +532,7 @@ func (q *Query) ForceDeleteJob(id uint64) error {
 }
 
 // ============================================================
-// 实时监控（用于 WebSocket 推送）
+// 实时快照（供轮询或推送适配层使用）
 // ============================================================
 
 // Snapshot 获取当前队列快照（用于实时更新）
@@ -502,18 +551,25 @@ func (q *Query) TakeSnapshot() *Snapshot {
 	}
 }
 
-// WatchOptions 监控选项
+// WatchOptions 配置快照轮询。
 type WatchOptions struct {
-	Interval time.Duration // 更新间隔
+	// Interval 是快照间隔。小于 100ms 时使用 1s，避免高频聚合读取。
+	Interval time.Duration
 }
 
-// Watch 开始监控队列变化（返回 channel 用于接收快照）
+// Watch 按固定间隔产生队列快照。
+//
+// Watch 不是变更日志：channel 只缓冲一个快照，消费者处理不及时会丢弃中间更新，下一次
+// 成功发送的快照仍反映当时的完整当前状态。取消 ctx 会停止 goroutine 并关闭 channel。
+// ctx 不能为 nil；Watch 不会修改调用方传入的 WatchOptions。
 func (q *Query) Watch(ctx context.Context, opts *WatchOptions) <-chan *Snapshot {
-	if opts == nil {
-		opts = &WatchOptions{}
+	if ctx == nil {
+		panic("webui: nil context")
 	}
-	if opts.Interval < 100*time.Millisecond {
-		opts.Interval = 1 * time.Second
+
+	interval := time.Second
+	if opts != nil && opts.Interval >= 100*time.Millisecond {
+		interval = opts.Interval
 	}
 
 	ch := make(chan *Snapshot, 1)
@@ -521,7 +577,7 @@ func (q *Query) Watch(ctx context.Context, opts *WatchOptions) <-chan *Snapshot 
 	go func() {
 		defer close(ch)
 
-		ticker := time.NewTicker(opts.Interval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
 		// 立即发送第一个快照

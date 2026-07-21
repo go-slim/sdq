@@ -2,16 +2,23 @@ package webui
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"html"
 	"io/fs"
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"go-slim.dev/sdq"
 )
 
 // Handler 提供 HTTP API 接口和静态文件服务用于监控队列
+//
+// 注意：Handler 不包含认证、授权或 CSRF 防护，且部分接口会修改队列或返回任务原始 Body。
+// 生产环境必须通过外层中间件限制为可信管理员访问，不能直接暴露到公网。
 //
 // 使用示例：
 //
@@ -21,8 +28,9 @@ import (
 //	// 无前缀，直接使用（API + 静态文件）
 //	http.Handle("/", handler)
 //
-//	// 添加路由前缀
-//	http.Handle("/sdq/", http.StripPrefix("/sdq", handler))
+//	// 添加路由前缀。浏览器侧 basePath 必须与实际挂载路径一致。
+//	prefixed := webui.NewHandlerWithBasePath(query, "/sdq/")
+//	http.Handle("/sdq/", http.StripPrefix("/sdq", prefixed))
 //
 // 可用的 API 路由：
 //   - GET  /api/overview                      获取队列概览
@@ -30,10 +38,13 @@ import (
 //   - GET  /api/topics/{topic}                获取单个 Topic 详情
 //   - GET  /api/topics/{topic}/jobs           获取 Topic 的任务列表
 //   - GET  /api/jobs/{id}                     获取单个任务详情
+//   - GET  /api/jobs/{id}/body                获取单个任务的真实 Body
+//   - GET  /api/metrics                       获取当前队列运行快照
+//   - GET  /api/storage                       获取当前存储统计
 //   - POST /api/topics/{topic}/kick           踢出 Topic 所有埋葬任务
 //   - POST /api/topics/{topic}/delete-buried  删除 Topic 所有埋葬任务
 //   - POST /api/jobs/{id}/kick                踢出单个埋葬任务
-//   - DELETE /api/jobs/{id}                   删除单个任务
+//   - DELETE /api/jobs/{id}                   强制删除任意状态的单个任务（不可逆）
 //
 // 静态文件路由：
 //   - GET  /                                  前端 SPA 页面
@@ -50,15 +61,14 @@ func NewHandler(query *Query) *Handler {
 	return NewHandlerWithBasePath(query, "/")
 }
 
-// NewHandlerWithBasePath 创建带有自定义基础路径的 HTTP 处理器
-// basePath 用于支持子路径部署，例如 "/sdq/"
+// NewHandlerWithBasePath 创建带有自定义基础路径的 HTTP 处理器。
+//
+// basePath 是浏览器可见的挂载路径，例如 "/sdq/"，不是 StripPrefix 后 Handler 收到的路径。
+// 空值按 "/" 处理；缺少开头或结尾的斜杠时会自动补齐。
 func NewHandlerWithBasePath(query *Query, basePath string) *Handler {
-	// 确保 basePath 以 / 结尾
-	if basePath != "/" && !strings.HasSuffix(basePath, "/") {
-		basePath += "/"
-	}
-	// 创建静态文件服务
-	distFS, err := fs.Sub(DistFS, "frontend/dist")
+	basePath = normalizeBasePath(basePath)
+	// 前端使用原生 ES modules 和 importmap，不需要预先构建。
+	frontendFS, err := fs.Sub(DistFS, "frontend")
 	if err != nil {
 		panic(err)
 	}
@@ -66,8 +76,8 @@ func NewHandlerWithBasePath(query *Query, basePath string) *Handler {
 	h := &Handler{
 		query:      query,
 		mux:        http.NewServeMux(),
-		staticFS:   distFS,
-		fileServer: http.FileServer(http.FS(distFS)),
+		staticFS:   frontendFS,
+		fileServer: http.FileServer(http.FS(frontendFS)),
 		basePath:   basePath,
 	}
 	h.registerRoutes()
@@ -91,6 +101,9 @@ func (h *Handler) registerRoutes() {
 	h.mux.HandleFunc("GET /api/topics/{topic}", h.handleAPITopic)
 	h.mux.HandleFunc("GET /api/topics/{topic}/jobs", h.handleAPIJobs)
 	h.mux.HandleFunc("GET /api/jobs/{id}", h.handleAPIJob)
+	h.mux.HandleFunc("GET /api/jobs/{id}/body", h.handleAPIJobBody)
+	h.mux.HandleFunc("GET /api/metrics", h.handleAPIMetrics)
+	h.mux.HandleFunc("GET /api/storage", h.handleAPIStorage)
 
 	// 操作 API
 	h.mux.HandleFunc("POST /api/topics/{topic}/kick", h.handleAPIKick)
@@ -143,7 +156,11 @@ func (h *Handler) handleAPIJobs(w http.ResponseWriter, r *http.Request) {
 	// 解析查询参数
 	page, _ := strconv.Atoi(query.Get("page"))
 	pageSize, _ := strconv.Atoi(query.Get("page_size"))
-	state := parseState(query.Get("state"))
+	state, validState := parseState(query.Get("state"))
+	if !validState {
+		h.writeError(w, http.StatusBadRequest, "invalid job state")
+		return
+	}
 
 	filter := &JobFilter{
 		Topic:    topic,
@@ -179,6 +196,63 @@ func (h *Handler) handleAPIJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.writeJSON(w, job)
+}
+
+type jobBodyResponse struct {
+	// Body 是原始任务 Body 的 UTF-8 文本，或者当 Encoding 为 base64 时的编码文本。
+	Body string `json:"body"`
+	// Encoding 为 utf-8 或 base64。UTF-8 内容不保证是 JSON。
+	Encoding string `json:"encoding"`
+	// Size 是编码前原始 Body 的字节数。
+	Size int `json:"size"`
+}
+
+// handleAPIJobBody 获取任务实际保存的 Body。
+//
+// 非 UTF-8 Body 会整体编码为 base64，响应大小约增加三分之一。外层服务应结合 MaxJobSize
+// 设置响应大小、权限和访问频率限制。
+func (h *Handler) handleAPIJobBody(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+
+	body, err := h.query.GetJobBody(r.Context(), id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, sdq.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		h.writeError(w, status, err.Error())
+		return
+	}
+
+	response := jobBodyResponse{
+		Body:     string(body),
+		Encoding: "utf-8",
+		Size:     len(body),
+	}
+	if !utf8.Valid(body) {
+		response.Body = base64.StdEncoding.EncodeToString(body)
+		response.Encoding = "base64"
+	}
+	h.writeJSON(w, response)
+}
+
+// handleAPIMetrics 获取同一时刻附近的队列概览和 Topic 状态。
+func (h *Handler) handleAPIMetrics(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, h.query.TakeSnapshot())
+}
+
+// handleAPIStorage 获取存储实现实际报告的统计信息。
+func (h *Handler) handleAPIStorage(w http.ResponseWriter, r *http.Request) {
+	info, err := h.query.Storage(r.Context())
+	if err != nil {
+		h.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	h.writeJSON(w, info)
 }
 
 // handleAPIKick 踢出 Topic 所有埋葬任务
@@ -238,7 +312,7 @@ func (h *Handler) handleAPIKickJob(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAPIDeleteJob 删除单个任务
+// handleAPIDeleteJob 强制删除任意状态的单个任务。该操作不可逆。
 func (h *Handler) handleAPIDeleteJob(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	id, err := strconv.ParseUint(idStr, 10, 64)
@@ -305,7 +379,7 @@ func (h *Handler) handleStatic(w http.ResponseWriter, r *http.Request) {
 	h.serveIndexHTML(w, r)
 }
 
-// serveIndexHTML 返回注入了 base 标签的 index.html
+// serveIndexHTML 返回配置了 base 标签的 index.html。
 func (h *Handler) serveIndexHTML(w http.ResponseWriter, r *http.Request) {
 	// 读取 index.html 内容
 	indexData, err := fs.ReadFile(h.staticFS, "index.html")
@@ -314,24 +388,48 @@ func (h *Handler) serveIndexHTML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 在 <head> 标签后注入 <base> 标签以支持子路径部署
-	baseTag := []byte(`<base href="` + h.basePath + `">`)
-	modifiedHTML := bytes.Replace(indexData, []byte("<head>"), append([]byte("<head>\n    "), baseTag...), 1)
+	// 前端自带根路径 base，部署到子路径时替换该默认值；兼容没有默认 base 的旧页面时，
+	// 仍在 head 后注入。
+	baseTag := []byte(`<base href="` + html.EscapeString(h.basePath) + `">`)
+	modifiedHTML := bytes.Replace(indexData, []byte(`<base href="/">`), baseTag, 1)
+	if bytes.Equal(modifiedHTML, indexData) {
+		modifiedHTML = bytes.Replace(
+			indexData,
+			[]byte("<head>"),
+			append([]byte("<head>\n    "), baseTag...),
+			1,
+		)
+	}
 
 	// 设置正确的 Content-Type
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Content-Length", strconv.Itoa(len(modifiedHTML)))
 	_, _ = w.Write(modifiedHTML)
+}
+
+func normalizeBasePath(basePath string) string {
+	basePath = strings.TrimSpace(basePath)
+	if basePath == "" || basePath == "/" {
+		return "/"
+	}
+	if !strings.HasPrefix(basePath, "/") {
+		basePath = "/" + basePath
+	}
+	if !strings.HasSuffix(basePath, "/") {
+		basePath += "/"
+	}
+	return basePath
 }
 
 // ============================================================
 // 辅助函数
 // ============================================================
 
-// parseState 解析状态字符串
-func parseState(s string) *sdq.State {
+// parseState 解析状态字符串。空值表示不限状态；第二个返回值报告非空值是否有效。
+func parseState(s string) (*sdq.State, bool) {
 	if s == "" {
-		return nil
+		return nil, true
 	}
 
 	var state sdq.State
@@ -345,21 +443,23 @@ func parseState(s string) *sdq.State {
 	case "buried":
 		state = sdq.StateBuried
 	default:
-		return nil
+		return nil, false
 	}
 
-	return &state
+	return &state, true
 }
 
 // writeJSON 写入 JSON 响应
 func (h *Handler) writeJSON(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(data)
 }
 
 // writeError 写入错误响应
 func (h *Handler) writeError(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"error": message,
