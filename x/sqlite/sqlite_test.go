@@ -550,6 +550,39 @@ func TestScanJobMeta(t *testing.T) {
 	if !result.HasMore {
 		t.Error("HasMore should be true")
 	}
+	if result.NextCursor != 2 {
+		t.Fatalf("NextCursor = %d, want 2", result.NextCursor)
+	}
+
+	filter = &sdq.JobMetaFilter{Limit: 2, Cursor: result.NextCursor}
+	result, err = storage.ScanJobMeta(ctx, filter)
+	if err != nil {
+		t.Fatalf("ScanJobMeta with cursor error: %v", err)
+	}
+	if len(result.Metas) != 2 || result.Metas[0].ID != 3 || result.Metas[1].ID != 4 {
+		t.Fatalf("cursor page IDs = %#v, want [3 4]", result.Metas)
+	}
+	if !result.HasMore || result.NextCursor != 4 {
+		t.Fatalf("cursor page has_more=%v next=%d, want true and 4", result.HasMore, result.NextCursor)
+	}
+
+	filter = &sdq.JobMetaFilter{Limit: 2, Cursor: result.NextCursor}
+	result, err = storage.ScanJobMeta(ctx, filter)
+	if err != nil {
+		t.Fatalf("ScanJobMeta with final cursor error: %v", err)
+	}
+	if len(result.Metas) != 1 || result.Metas[0].ID != 5 || result.HasMore {
+		t.Fatalf("final cursor page = %#v, has_more=%v", result.Metas, result.HasMore)
+	}
+
+	filter = &sdq.JobMetaFilter{Offset: 2}
+	result, err = storage.ScanJobMeta(ctx, filter)
+	if err != nil {
+		t.Fatalf("ScanJobMeta with offset and no limit error: %v", err)
+	}
+	if len(result.Metas) != 3 || result.Metas[0].ID != 3 || result.Metas[2].ID != 5 {
+		t.Fatalf("offset page IDs = %#v, want [3 4 5]", result.Metas)
+	}
 }
 
 func TestCountJobs(t *testing.T) {
@@ -611,6 +644,58 @@ func TestCountJobs(t *testing.T) {
 
 	if count != 2 {
 		t.Errorf("Count with state filter = %d, want %d", count, 2)
+	}
+}
+
+func TestCloseDrainsAcceptedMetadataUpdates(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "close-drain.db")
+	storage, err := New(dbPath, WithMaxBatchSize(1))
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx := context.Background()
+	const jobCount = 100
+	for id := 1; id <= jobCount; id++ {
+		meta := &sdq.JobMeta{
+			ID:       uint64(id),
+			Topic:    "close-drain",
+			State:    sdq.StateReady,
+			Priority: 1,
+		}
+		if err := storage.SaveJob(ctx, meta, []byte("body")); err != nil {
+			t.Fatalf("SaveJob(%d) failed: %v", id, err)
+		}
+
+		meta.State = sdq.StateBuried
+		if err := storage.UpdateJobMeta(ctx, meta); err != nil {
+			t.Fatalf("UpdateJobMeta(%d) failed: %v", id, err)
+		}
+	}
+
+	if err := storage.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if err := storage.UpdateJobMeta(ctx, &sdq.JobMeta{ID: 1}); err != sdq.ErrStorageClosed {
+		t.Fatalf("UpdateJobMeta after Close = %v, want ErrStorageClosed", err)
+	}
+
+	reopened, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("reopen failed: %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+
+	buried := sdq.StateBuried
+	count, err := reopened.CountJobs(ctx, &sdq.JobMetaFilter{
+		Topic: "close-drain",
+		State: &buried,
+	})
+	if err != nil {
+		t.Fatalf("CountJobs failed: %v", err)
+	}
+	if count != jobCount {
+		t.Fatalf("buried jobs after reopen = %d, want %d", count, jobCount)
 	}
 }
 

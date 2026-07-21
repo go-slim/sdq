@@ -2,6 +2,7 @@ package sdq
 
 import (
 	"context"
+	"sort"
 	"sync"
 )
 
@@ -100,8 +101,29 @@ func (s *memoryStorage) ScanJobMeta(ctx context.Context, filter *JobMetaFilter) 
 			if filter.State != nil && meta.State != *filter.State {
 				continue
 			}
+			if filter.Cursor > 0 && meta.ID <= filter.Cursor {
+				continue
+			}
 		}
 		result.Metas = append(result.Metas, meta.Clone())
+	}
+	sort.Slice(result.Metas, func(i, j int) bool {
+		return result.Metas[i].ID < result.Metas[j].ID
+	})
+	result.Total = len(result.Metas)
+	if filter != nil {
+		if filter.Offset > 0 {
+			if filter.Offset >= len(result.Metas) {
+				result.Metas = nil
+			} else {
+				result.Metas = result.Metas[filter.Offset:]
+			}
+		}
+		if filter.Limit > 0 && len(result.Metas) > filter.Limit {
+			result.HasMore = true
+			result.Metas = result.Metas[:filter.Limit]
+			result.NextCursor = result.Metas[len(result.Metas)-1].ID
+		}
 	}
 	return result, nil
 }

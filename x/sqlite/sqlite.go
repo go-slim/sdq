@@ -1,6 +1,10 @@
 // Package sqlite provides a SQLite storage implementation.
-// It includes built-in batch update and batch save buffering mechanisms
-// that automatically merge concurrent calls.
+//
+// SaveJob batches concurrent calls internally but waits for the transaction result before returning.
+// UpdateJobMeta instead returns after a bounded buffer accepts the update; nil does not mean the new state
+// is already durable. Close attempts to flush accepted metadata updates during an orderly shutdown, while
+// an abrupt process exit can lose the most recent state transitions. Concrete callers that require an
+// immediate durable metadata update can use Storage.UpdateJobMetaSync.
 package sqlite
 
 import (
@@ -25,8 +29,9 @@ type saveJobRequest struct {
 }
 
 // Storage is a SQLite storage implementation.
-// It includes built-in batch update and batch save buffering mechanisms
-// that automatically merge concurrent calls.
+//
+// Do not call Close concurrently with other methods. SaveJob is synchronous from the caller's perspective;
+// UpdateJobMeta is buffered as described in the package documentation.
 type Storage struct {
 	db     *sql.DB
 	dbPath string
@@ -205,7 +210,9 @@ func (s *Storage) initTables() error {
 }
 
 // SaveJob saves a job (metadata + body).
-// Internally merges concurrent requests for better batch write performance.
+//
+// It internally merges concurrent requests, but waits until the transaction commits or fails. Once a
+// request has entered the batch, SaveJob waits for that result even if ctx is subsequently cancelled.
 func (s *Storage) SaveJob(ctx context.Context, meta *sdq.JobMeta, body []byte) error {
 	// Check if closed
 	s.closeMu.Lock()
@@ -354,9 +361,19 @@ func (s *Storage) batchSaveJobsInternal(requests []*saveJobRequest) error {
 	return nil
 }
 
-// UpdateJobMeta updates job metadata (async batch buffering).
-// Automatically buffers high-frequency updates and batch writes, greatly reducing I/O pressure.
+// UpdateJobMeta accepts a metadata update into the asynchronous batch buffer.
+//
+// A nil result means accepted, not committed. An orderly Close attempts to flush accepted updates; an
+// abrupt process exit can lose recent state transitions. Use UpdateJobMetaSync when immediate durability
+// is required and the concrete SQLite type is available.
 func (s *Storage) UpdateJobMeta(ctx context.Context, meta *sdq.JobMeta) error {
+	s.closeMu.Lock()
+	if s.closed {
+		s.closeMu.Unlock()
+		return sdq.ErrStorageClosed
+	}
+	s.closeMu.Unlock()
+
 	// Clone metadata to avoid external modification
 	metaCopy := meta.Clone()
 
@@ -554,7 +571,12 @@ func (s *Storage) ScanJobMeta(ctx context.Context, filter *sdq.JobMetaFilter) (*
 			query += " AND state = ?"
 			args = append(args, *filter.State)
 		}
+		if filter.Cursor > 0 {
+			query += " AND id > ?"
+			args = append(args, filter.Cursor)
+		}
 	}
+	query += " ORDER BY id ASC"
 
 	// Apply offset and limit
 	if filter != nil && filter.Limit > 0 {
@@ -564,6 +586,10 @@ func (s *Storage) ScanJobMeta(ctx context.Context, filter *sdq.JobMetaFilter) (*
 			query += " OFFSET ?"
 			args = append(args, filter.Offset)
 		}
+	} else if filter != nil && filter.Offset > 0 {
+		// SQLite 只有在 LIMIT 存在时才允许 OFFSET；-1 表示不限制返回数量。
+		query += " LIMIT -1 OFFSET ?"
+		args = append(args, filter.Offset)
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -632,8 +658,12 @@ func (s *Storage) ScanJobMeta(ctx context.Context, filter *sdq.JobMetaFilter) (*
 		metas = metas[:filter.Limit]
 	}
 
-	// Count total (optional)
-	total := len(metas)
+	// 分页查询不额外执行 COUNT，Total=0 表示未提供；无数量限制时已读取
+	// 所有匹配记录，可直接使用结果长度。
+	total := 0
+	if filter == nil || (filter.Limit <= 0 && filter.Offset <= 0) {
+		total = len(metas)
+	}
 
 	return &sdq.JobMetaList{
 		Metas:      metas,
@@ -689,7 +719,8 @@ func (s *Storage) GetMaxJobID(ctx context.Context) (uint64, error) {
 	return uint64(maxID.Int64), nil
 }
 
-// Close closes the storage.
+// Close stops accepting operations, drains the save and metadata update channels, and closes SQLite.
+// Callers must stop all concurrent Storage operations before calling Close.
 func (s *Storage) Close() error {
 	s.closeMu.Lock()
 	if s.closed {
@@ -699,17 +730,17 @@ func (s *Storage) Close() error {
 	s.closed = true
 	s.closeMu.Unlock()
 
-	// Stop batch loops
-	s.cancel()
-
-	// Close channels to let goroutines exit
+	// Closing the channels makes both loops process every request already accepted before they exit.
+	// Cancelling first would make each loop return early and leave buffered writes unprocessed.
 	close(s.updateChan)
 	close(s.saveChan)
 
-	// Wait for goroutines to complete
+	// Wait until every accepted request has been processed before cancelling the internal context.
 	s.wg.Wait()
+	s.cancel()
 
-	// Final flush of update buffer (batchSaveLoop has processed all save requests)
+	// batchUpdateLoop normally flushes before it exits. Keep a final flush as a defensive check in case
+	// a future collection path leaves entries in updateBuffer.
 	s.flushUpdates()
 
 	return s.db.Close()

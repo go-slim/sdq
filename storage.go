@@ -17,16 +17,16 @@ type JobMetaFilter struct {
 	Topic  string // 按 topic 过滤，空表示不过滤
 	State  *State // 按状态过滤，nil 表示不过滤
 	Limit  int    // 返回数量限制，0 表示无限制
-	Offset int    // 偏移量，用于分页
-	Cursor uint64 // 游标（任务 ID），用于游标分页，0 表示从头开始
+	Offset int    // 偏移量，用于普通分页；不要与 Cursor 同时使用
+	Cursor uint64 // 只返回 ID 大于 Cursor 的任务；0 表示从头开始
 }
 
 // JobMetaList 任务元数据列表结果
 type JobMetaList struct {
 	Metas      []*JobMeta // 任务元数据列表
-	Total      int        // 总数（可选，某些实现可能不支持）
+	Total      int        // Offset/Limit 前的匹配总数；0 也可表示实现不提供该统计
 	HasMore    bool       // 是否还有更多数据
-	NextCursor uint64     // 下一页游标（最后一个任务的 ID）
+	NextCursor uint64     // HasMore 为 true 时下一页游标，即本页最后一个任务 ID
 }
 
 // Storage 持久化存储接口
@@ -39,28 +39,34 @@ type Storage interface {
 
 	// === 任务创建（原子操作） ===
 
-	// SaveJob 保存完整任务（元数据 + Body）
-	// 只在 Put 时调用，同时保存 meta 和 body
-	// Body 不可变，一旦保存就不会修改
-	// 如果任务已存在则返回 ErrJobExists
+	// SaveJob 保存完整任务（元数据 + Body）。
+	//
+	// 只在 Put 时调用，同时保存 meta 和 body。返回 nil 时，后续 GetJobMeta 和 GetJobBody
+	// 必须已经能够读到该任务；仅把请求放入异步缓冲区不满足此契约。Body 不可变，一旦保存
+	// 就不会修改。如果任务已存在则返回 ErrJobExists。
 	SaveJob(ctx context.Context, meta *JobMeta, body []byte) error
 
 	// === 元数据操作 ===
 
-	// UpdateJobMeta 更新任务元数据
-	// 只更新元数据（状态、统计等），不涉及 Body
-	// 如果任务不存在则返回 ErrNotFound
+	// UpdateJobMeta 更新任务元数据。
+	//
+	// 只更新元数据（状态、统计等），不涉及 Body。实现可以在返回前完成持久化，
+	// 也可以只接受到有界内部缓冲区，但 Close 必须排空已接受的更新。如果任务不存在则返回
+	// ErrNotFound。
 	UpdateJobMeta(ctx context.Context, meta *JobMeta) error
 
 	// GetJobMeta 获取任务元数据
 	// 如果任务不存在则返回 ErrNotFound
 	GetJobMeta(ctx context.Context, id uint64) (*JobMeta, error)
 
-	// ScanJobMeta 扫描任务元数据
-	// 支持过滤、分页和游标
-	// filter 为 nil 时返回所有任务元数据（用于启动恢复）
-	// 启动恢复时：ScanJobMeta(ctx, nil) 加载所有元数据，不加载 Body
-	// 性能关键：100 万任务时只需 200MB 内存而不是 10GB
+	// ScanJobMeta 扫描任务元数据，不加载 Body。
+	//
+	// filter 为 nil 时返回全部元数据。使用 Cursor 分页时，实现必须只返回 ID > Cursor 的
+	// 记录并按 ID 严格升序排列。HasMore 为 true 时，NextCursor 必须等于本页最后一条记录
+	// 的 ID 且大于传入的 Cursor；否则 Queue 启动恢复可能重复读取同一页。
+	//
+	// Cursor 用于 Queue 的有界内存启动恢复，不应与 Offset 混用。Total 是可选信息，恢复
+	// 流程不会依赖它计算进度。
 	ScanJobMeta(ctx context.Context, filter *JobMetaFilter) (*JobMetaList, error)
 
 	// === Body 操作 ===
@@ -78,8 +84,10 @@ type Storage interface {
 
 	// === 统计查询 ===
 
-	// CountJobs 统计任务数量
-	// filter 为 nil 时统计所有任务
+	// CountJobs 统计任务数量。
+	//
+	// filter 为 nil 时统计所有任务。实现只应用 Topic 和 State，忽略 Limit、Offset 和 Cursor，
+	// 以便调用方取得分页前的精确总数。
 	CountJobs(ctx context.Context, filter *JobMetaFilter) (int, error)
 
 	// GetMaxJobID 获取最大任务 ID
@@ -94,7 +102,8 @@ type Storage interface {
 
 	// === 资源管理 ===
 
-	// Close 关闭存储
+	// Close 关闭存储并排空已经接受的后台写入。调用方必须先停止所有并发存储操作；Close
+	// 不需要与 SaveJob、UpdateJobMeta 或查询方法并发安全。
 	Close() error
 }
 

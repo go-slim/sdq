@@ -1,9 +1,13 @@
 // Package memory provides an in-memory storage implementation.
-// It is suitable for testing and scenarios that don't require persistence.
+//
+// It is intended for tests and small, temporary queues. Close discards all data, and process exit cannot
+// recover it. Cursor scans sort the current map on every page, so this backend is not intended for large
+// recovery workloads.
 package memory
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"go-slim.dev/sdq"
@@ -13,7 +17,7 @@ import (
 var _ sdq.Storage = (*Storage)(nil)
 
 // Storage is an in-memory storage implementation.
-// It is suitable for testing and scenarios that don't require persistence.
+// It is suitable for tests and small scenarios that don't require persistence.
 type Storage struct {
 	mu     sync.RWMutex
 	metas  map[uint64]*sdq.JobMeta // Job metadata
@@ -115,6 +119,9 @@ func (s *Storage) DeleteJob(ctx context.Context, id uint64) error {
 }
 
 // ScanJobMeta scans job metadata.
+//
+// Each call clones and sorts all matching metadata. Cursor pagination bounds the returned page, but does
+// not turn repeated scans into an indexed traversal.
 func (s *Storage) ScanJobMeta(ctx context.Context, filter *sdq.JobMetaFilter) (*sdq.JobMetaList, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -132,9 +139,15 @@ func (s *Storage) ScanJobMeta(ctx context.Context, filter *sdq.JobMetaFilter) (*
 		if filter != nil && filter.State != nil && meta.State != *filter.State {
 			continue
 		}
+		if filter != nil && filter.Cursor > 0 && meta.ID <= filter.Cursor {
+			continue
+		}
 
 		allMetas = append(allMetas, meta.Clone())
 	}
+	sort.Slice(allMetas, func(i, j int) bool {
+		return allMetas[i].ID < allMetas[j].ID
+	})
 
 	total := len(allMetas)
 
