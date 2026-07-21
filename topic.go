@@ -194,10 +194,21 @@ func (t *topic) stats() *TopicStats {
 // ProcessTick 处理 tick 通知
 func (t *topic) ProcessTick(now time.Time) {
 	// 处理 Delayed → Ready
-	t.processDelayed(now)
+	changed := t.processDelayed(now)
 
 	// 处理 Reserved 超时 → Ready
-	t.processReservedTimeout(now)
+	changed = append(changed, t.processReservedTimeout(now)...)
+
+	if len(changed) == 0 || t.queue == nil || t.queue.topicMgr == nil {
+		return
+	}
+
+	// 状态转换在 topic 锁内完成；持久化和唤醒必须放在锁外，避免 Storage 或等待队列
+	// 回调阻塞调度结构。submitMetaUpdate 会记录无法安全回滚的持久化提交错误。
+	for _, meta := range changed {
+		t.queue.topicMgr.submitMetaUpdate(meta)
+	}
+	t.queue.notifyWaiters(t.name)
 }
 
 // NextTickTime 返回下一个需要 tick 的时间
@@ -245,11 +256,12 @@ func (t *topic) needsTick() bool {
 	return t.delayed.Len() > 0 || len(t.reserved) > 0
 }
 
-// processDelayed 处理延迟任务到期
-func (t *topic) processDelayed(now time.Time) {
+// processDelayed 处理延迟任务到期，并返回用于锁外持久化的快照。
+func (t *topic) processDelayed(now time.Time) []*JobMeta {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	var changed []*JobMeta
 	for t.delayed.Len() > 0 {
 		meta := t.delayed.items[0]
 
@@ -261,11 +273,13 @@ func (t *topic) processDelayed(now time.Time) {
 		heap.Pop(t.delayed)
 		meta.State = StateReady
 		heap.Push(t.ready, meta)
+		changed = append(changed, meta.Clone())
 	}
+	return changed
 }
 
-// processReservedTimeout 处理保留任务超时
-func (t *topic) processReservedTimeout(now time.Time) {
+// processReservedTimeout 处理保留任务超时，并返回用于锁外持久化的快照。
+func (t *topic) processReservedTimeout(now time.Time) []*JobMeta {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -278,6 +292,7 @@ func (t *topic) processReservedTimeout(now time.Time) {
 	}
 
 	// 处理超时任务
+	changed := make([]*JobMeta, 0, len(timeoutIDs))
 	for _, id := range timeoutIDs {
 		meta := t.reserved[id]
 		delete(t.reserved, id)
@@ -288,6 +303,7 @@ func (t *topic) processReservedTimeout(now time.Time) {
 			meta.ReservedAt = time.Time{}
 			meta.ReadyAt = now
 			heap.Push(t.ready, meta)
+			changed = append(changed, meta.Clone())
 
 			// 记录超时统计
 			if t.queue != nil && t.queue.stats != nil {
@@ -295,6 +311,7 @@ func (t *topic) processReservedTimeout(now time.Time) {
 			}
 		}
 	}
+	return changed
 }
 
 // === 批量操作（用于 TopicManager 内部，需要原子操作多个队列） ===

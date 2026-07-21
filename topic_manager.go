@@ -2,6 +2,7 @@ package sdq
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -56,7 +57,7 @@ func (h *topicManager) getTopic(name string) *topic {
 
 // registerToTicker 如果需要则注册到 ticker（调用者必须持有锁）
 func (h *topicManager) registerToTicker(name string, t *topic) {
-	if t.needsTick() {
+	if t.NeedsTick() {
 		h.queue.ticker.Register(name, t)
 	}
 }
@@ -64,6 +65,25 @@ func (h *topicManager) registerToTicker(name string, t *topic) {
 // unregisterFromTicker 从 ticker 注销
 func (h *topicManager) unregisterFromTicker(name string) {
 	h.queue.ticker.Unregister(name)
+}
+
+// submitMetaUpdate 把已经生效的内存状态提交给 Storage。
+//
+// 状态转换不能在持久化失败后安全回滚；返回错误会诱使调用方重试一个已经完成的内存操作。
+// 因此运行期 API 保持原有成功语义，并在 Storage 拒绝更新时记录可观测错误。SQLite 等异步
+// Storage 返回 nil 可能只表示接受到内部缓冲区，最终写入失败仍由具体实现的关闭和日志策略决定。
+func (h *topicManager) submitMetaUpdate(meta *JobMeta) {
+	if meta == nil {
+		return
+	}
+	if err := h.queue.storage.UpdateJobMeta(context.Background(), meta); err != nil {
+		h.queue.logger.Error("failed to submit job metadata update",
+			slog.Uint64("id", meta.ID),
+			slog.String("topic", meta.Topic),
+			slog.String("state", meta.State.String()),
+			slog.Any("error", err),
+		)
+	}
 }
 
 // tryReserve 尝试从指定 topics 预留任务
@@ -99,7 +119,7 @@ func (h *topicManager) tryReserve(topics []string) *JobMeta {
 
 	// 更新到 Storage（移到锁外）
 	if metaClone != nil {
-		_ = h.queue.storage.UpdateJobMeta(context.Background(), metaClone)
+		h.submitMetaUpdate(metaClone)
 	}
 
 	return metaClone
@@ -340,13 +360,11 @@ func (h *topicManager) put(topicName string, meta *JobMeta) (bool, error) {
 		h.queue.ticker.Wakeup()
 	}
 
-	// 注意：不在这里持久化，由 Queue.Put() 的异步 worker 负责持久化
-	// 这样可以避免重复持久化，并且可以批量写入提高性能
+	// 持久化由 Queue.Put 在调用此方法前完成；这里仅负责内存调度，避免重复写入。
 
 	return needsNotify, nil
 }
 
-// delete 删除任务（必须是已保留状态）
 // delete 删除任务
 // force: true 表示强制删除（支持任何状态），false 表示仅删除 Reserved 状态的任务
 func (h *topicManager) delete(id uint64, force bool) error {
@@ -398,9 +416,12 @@ func (h *topicManager) delete(id uint64, force bool) error {
 
 	// 从 Storage 删除（移到锁外）
 	if err := h.queue.storage.DeleteJob(context.Background(), id); err != nil {
-		// 即使 Storage 删除失败，内存中已经删除了
-		// 这里可以记录日志，但不影响返回结果
-		_ = err
+		// 内存删除已经生效，无法安全回滚；记录错误并保留原有返回语义。
+		h.queue.logger.Error("failed to delete job from storage",
+			slog.Uint64("id", id),
+			slog.String("topic", topicName),
+			slog.Any("error", err),
+		)
 	}
 
 	return nil
@@ -449,7 +470,7 @@ func (h *topicManager) release(id uint64, priority uint32, delay time.Duration) 
 
 	// 更新到 Storage（移到锁外）
 	if metaClone != nil {
-		_ = h.queue.storage.UpdateJobMeta(context.Background(), metaClone)
+		h.submitMetaUpdate(metaClone)
 	}
 
 	return topicName, needsNotify, nil
@@ -491,7 +512,7 @@ func (h *topicManager) bury(id uint64, priority uint32) error {
 
 	// 更新到 Storage（移到锁外）
 	if metaClone != nil {
-		_ = h.queue.storage.UpdateJobMeta(context.Background(), metaClone)
+		h.submitMetaUpdate(metaClone)
 	}
 
 	return nil
@@ -528,7 +549,7 @@ func (h *topicManager) kick(topicName string, bound int) (int, bool, error) {
 
 	// 更新到 Storage（移到锁外）
 	for _, metaClone := range metaClones {
-		_ = h.queue.storage.UpdateJobMeta(context.Background(), metaClone)
+		h.submitMetaUpdate(metaClone)
 	}
 
 	needsNotify := kicked > 0
@@ -567,7 +588,7 @@ func (h *topicManager) kickJob(id uint64) (string, error) {
 
 	// 更新到 Storage（移到锁外）
 	if metaClone != nil {
-		_ = h.queue.storage.UpdateJobMeta(context.Background(), metaClone)
+		h.submitMetaUpdate(metaClone)
 	}
 
 	return topicName, nil
@@ -647,18 +668,39 @@ func (h *topicManager) touch(id uint64, config *Config, duration ...time.Duratio
 	h.mu.Unlock()
 
 	// 更新到 Storage（移到锁外）
-	_ = h.queue.storage.UpdateJobMeta(context.Background(), metaClone)
+	h.submitMetaUpdate(metaClone)
 
 	return nil
 }
 
-// applyRecovery 应用恢复结果
+// applyRecovery 应用一个恢复批次。
+//
+// 恢复批次按严格递增且互不重叠的 ID 范围生成，并受 Queue 启动时的 MaxID 快照限制。
+// Queue 在 Start 成功返回前会拒绝 Put；启动后新分配的 ID 均大于快照，因此这里
+// 无需为每个任务再做一次全局重复查找。方法会先检查新增 Topic 数量，失败时不会应用批次。
 func (h *topicManager) applyRecovery(result *RecoveryResult) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	readyTopics := make([]string, 0, len(result.TopicJobs))
+	defer func() {
+		h.mu.Unlock()
+		for _, topicName := range readyTopics {
+			h.queue.notifyWaiters(topicName)
+		}
+	}()
+
+	if h.queue.config.MaxTopics > 0 {
+		missing := 0
+		for topicName := range result.TopicJobs {
+			if h.topics[topicName] == nil {
+				missing++
+			}
+		}
+		if len(h.topics)+missing > h.queue.config.MaxTopics {
+			return ErrMaxTopicsReached
+		}
+	}
 
 	// 按 Topic 恢复任务
-	skipped := 0
 	for topicName, jobs := range result.TopicJobs {
 		// 确保 topic 存在
 		t, err := h.getOrCreateTopic(topicName)
@@ -667,29 +709,25 @@ func (h *topicManager) applyRecovery(result *RecoveryResult) error {
 		}
 
 		// 将任务加入对应队列
+		hasReady := false
 		for _, meta := range jobs {
-			// 检查任务是否已存在（防止异步恢复导致的重复）
-			if existingMeta, _ := h.findJob(meta.ID); existingMeta != nil {
-				skipped++
-				continue
-			}
-
 			switch meta.State {
 			case StateReady:
 				t.pushReady(meta)
+				hasReady = true
 			case StateDelayed:
 				t.pushDelayed(meta)
 			case StateBuried:
 				t.pushBuried(meta)
 			}
 		}
+		if hasReady {
+			readyTopics = append(readyTopics, topicName)
+		}
 
 		// 注册到 Ticker（使用 locked 版本，因为已持有锁）
 		h.registerToTicker(topicName, t)
 	}
-
-	// 可选：记录跳过的任务数（用于调试）
-	_ = skipped
 
 	return nil
 }

@@ -39,6 +39,8 @@ var (
 	ErrInvalidTimeout = errors.New("sdq: timeout must be greater than 0")
 	// ErrQueueStopped Queue 已停止，无法重新启动
 	ErrQueueStopped = errors.New("sdq: queue already stopped")
+	// ErrQueueNotStarted Queue 尚未成功启动
+	ErrQueueNotStarted = errors.New("sdq: queue not started")
 	// ErrInvalidConfig 配置无效
 	ErrInvalidConfig = errors.New("sdq: invalid config")
 )
@@ -78,10 +80,12 @@ type Queue struct {
 	// 恢复完成通知（用于等待异步恢复）
 	recoveryDone chan struct{}
 	recoveryOnce sync.Once
+	recoveryErr  error // 在 recoveryDone 关闭前写入，关闭后只读
 
 	// 启动控制
 	startOnce sync.Once
 	startErr  error
+	started   atomic.Bool
 	stopped   atomic.Bool
 
 	// 启动时间（用于 Inspector）
@@ -162,22 +166,30 @@ func New(config Config) (*Queue, error) {
 	return q, nil
 }
 
-// Start 启动 Queue
-// 如果配置了 Storage，会从 Storage 恢复任务
-// StartOptions 启动选项
+// StartOptions 配置 Queue 的启动行为。
 type StartOptions struct {
-	// RecoveryCallback 恢复进度回调
-	// 如果提供了回调，会在恢复过程中调用它报告进度（Start, Recovering 阶段）
+	// RecoveryCallback 接收后台恢复的全部阶段和最终错误。
+	//
+	// 回调在恢复 goroutine 中串行执行，并且可能早于 StartWithOptions 返回。回调应尽快返回，
+	// 不得调用同一 Queue 的 Start、Stop、WaitForRecovery 或其他运行期方法：前几者可能造成
+	// 重入或等待当前 goroutine，后者在启动返回前尚不具备稳定的生命周期语义。
 	RecoveryCallback RecoveryCallback
 }
 
-// Start 启动 Queue（使用异步恢复）
+// Start 启动 Queue，并在后台从 Storage 恢复启动时已有的任务。
+//
+// Start 在取得 Storage 当前最大任务 ID、启动恢复 goroutine 和运行组件后返回，不等待任务
+// 恢复完成。返回 nil 只表示启动成功；恢复错误由 WaitForRecovery 返回，也会通过
+// RecoveryCallback 报告。Start 必须在 Put 和 Stop 之前完成，不能与这两个方法并发调用。
 func (q *Queue) Start() error {
 	return q.StartWithOptions(StartOptions{})
 }
 
-// StartWithOptions 使用选项启动 Queue
-// 此方法是幂等的，多次调用只会启动一次
+// StartWithOptions 使用选项启动 Queue。
+//
+// 恢复期间 Queue 可以接收和消费新任务，但查询结果和统计可能暂时只包含已恢复的部分任务。
+// 此方法是幂等的，多次调用只会执行第一次启动，并返回第一次启动的结果；后续调用传入的
+// StartOptions 会被忽略。StartWithOptions 不能与 Put、Stop 或另一次启动调用并发执行。
 func (q *Queue) StartWithOptions(opts StartOptions) error {
 	q.startOnce.Do(func() {
 		q.startErr = q.doStart(opts)
@@ -208,36 +220,6 @@ func (q *Queue) doStart(opts StartOptions) error {
 	q.nextID.Store(maxID + 1)
 	q.logger.Debug("initialized job id generator", slog.Uint64("next_id", maxID+1))
 
-	// 2. 后台异步恢复任务
-	q.wg.Go(func() {
-		defer q.recoveryOnce.Do(func() { close(q.recoveryDone) })
-
-		q.logger.Info("starting async job recovery")
-		recoveryMgr.Recover(func(progress *RecoveryProgress) {
-			// 用户回调
-			if opts.RecoveryCallback != nil {
-				opts.RecoveryCallback(progress)
-			}
-
-			// 处理恢复结果
-			switch progress.Phase {
-			case RecoveryPhaseComplete:
-				q.logger.Info("job recovery completed",
-					slog.Int("total_jobs", progress.TotalJobs),
-					slog.Int("loaded_jobs", progress.LoadedJobs),
-					slog.Int("failed_jobs", progress.FailedJobs),
-				)
-				if progress.Result != nil {
-					if err := q.applyRecoveryJobs(progress.Result); err != nil {
-						q.logger.Error("failed to apply recovery jobs", slog.Any("error", err))
-					}
-				}
-			case RecoveryPhaseError:
-				q.logger.Error("job recovery failed", slog.Any("error", progress.Error))
-			}
-		})
-	})
-
 	// 启动 Ticker
 	q.ticker.Start()
 	q.logger.Debug("started ticker")
@@ -253,19 +235,51 @@ func (q *Queue) doStart(opts StartOptions) error {
 		q.logger.Debug("started topic cleanup loop")
 	}
 
+	// 运行组件就绪后再启动恢复，避免自定义 Ticker 在 Start 前收到 Register。
+	q.wg.Go(func() {
+		defer q.recoveryOnce.Do(func() { close(q.recoveryDone) })
+
+		q.logger.Info("starting async job recovery")
+		recoveryMgr.Recover(maxID, func(progress *RecoveryProgress) {
+			switch progress.Phase {
+			case RecoveryPhaseComplete:
+				q.logger.Info("job recovery completed",
+					slog.Int("total_jobs", progress.TotalJobs),
+					slog.Int("loaded_jobs", progress.LoadedJobs),
+					slog.Int("failed_jobs", progress.FailedJobs),
+				)
+			case RecoveryPhaseError:
+				q.recoveryErr = progress.Error
+				q.logger.Error("job recovery failed", slog.Any("error", progress.Error))
+			}
+
+			if opts.RecoveryCallback != nil {
+				opts.RecoveryCallback(progress)
+			}
+		}, q.applyRecoveryJobs)
+	})
+
+	// 只有快照上限已确定且所有运行组件已启动后才允许 Put。此后分配的
+	// ID 严格大于恢复快照上限，不会被后台恢复重复装载。
+	q.started.Store(true)
 	q.logger.Info("queue started successfully")
 	return nil
 }
 
-// WaitForRecovery 等待恢复完成
-// timeout: 超时时间，0 表示无限等待
-// 返回: 如果超时返回 ErrTimeout，如果队列已关闭返回 context.Canceled
+// WaitForRecovery 等待后台恢复 goroutine 退出。
+//
+// 必须先调用 Start 或 StartWithOptions。timeout 为 0 时无限等待；超时返回 ErrTimeout，
+// Queue 停止时返回其 context 错误；恢复失败时返回底层扫描或应用错误。超时不会取消恢复。
 func (q *Queue) WaitForRecovery(timeout time.Duration) error {
+	if !q.started.Load() {
+		return ErrQueueNotStarted
+	}
+
 	if timeout == 0 {
 		// 无限等待
 		select {
 		case <-q.recoveryDone:
-			return nil
+			return q.recoveryErr
 		case <-q.ctx.Done():
 			return q.ctx.Err()
 		}
@@ -277,7 +291,7 @@ func (q *Queue) WaitForRecovery(timeout time.Duration) error {
 
 	select {
 	case <-q.recoveryDone:
-		return nil
+		return q.recoveryErr
 	case <-timer.C:
 		return ErrTimeout
 	case <-q.ctx.Done():
@@ -285,30 +299,29 @@ func (q *Queue) WaitForRecovery(timeout time.Duration) error {
 	}
 }
 
-// Stop 停止 Queue
-// 停止后无法重新启动，需要创建新的 Queue 实例
-// 此方法是幂等的，多次调用只会停止一次
+// Stop 停止 Queue。
+//
+// 停止后无法重新启动，需要创建新的 Queue 实例。此方法是幂等的，多次调用只会
+// 停止一次。Stop 应在 Start 返回后、所有运行期调用停止后执行，不能与 Put 等操作并发，
+// 也不能在 RecoveryCallback 中调用。未启动就调用 Stop 也会永久关闭该 Queue 及其 Storage。
 func (q *Queue) Stop() error {
 	if !q.stopped.CompareAndSwap(false, true) {
 		return nil
 	}
 	q.logger.Info("stopping queue")
 
-	// 停止 Ticker
-	q.ticker.Stop()
-	q.logger.Debug("stopped ticker")
-
-	// 停止 Reserve 管理器
+	// 先取消 Queue 上下文，让恢复、等待和清理循环开始退出。
+	q.cancel()
 	q.reserveMgr.stop()
 	q.logger.Debug("stopped reserve manager")
 
-	// 取消 context，停止所有后台 goroutine
-	q.cancel()
-
-	// 等待所有后台任务完成
+	// 恢复协程可能仍在 Register Topic，因此必须先等待它退出，再关闭 Ticker。
 	q.logger.Debug("waiting for background tasks to finish")
 	q.wg.Wait()
 	q.logger.Debug("all background tasks finished")
+
+	q.ticker.Stop()
+	q.logger.Debug("stopped ticker")
 
 	// 关闭 Storage
 	if err := q.storage.Close(); err != nil {
@@ -328,9 +341,8 @@ func (q *Queue) allocateID() uint64 {
 	return q.nextID.Add(1) - 1
 }
 
-// applyRecovery 应用恢复结果到 Queue
 // applyRecoveryJobs 应用恢复的任务（用于异步恢复模式）
-// MaxID 已经在快速启动阶段设置，这里只应用任务
+// MaxID 已经在快速启动阶段设置，这里只应用当前恢复批次。
 func (q *Queue) applyRecoveryJobs(result *RecoveryResult) error {
 	return q.topicMgr.applyRecovery(result)
 }
@@ -362,13 +374,21 @@ func (q *Queue) cleanupLoop() {
 
 // === 写操作 API（委托给 TopicHub）===
 
-// Put 添加任务到队列
-// topic: topic 名称，不能为空
-// body: 任务数据
-// priority: 优先级（数字越小优先级越高）
-// delay: 延迟时间
-// ttr: 执行超时时间，0 使用默认值
+// Put 添加任务到队列。
+//
+// topic 不能为空；priority 数值越小优先级越高；ttr 为 0 时使用默认值。Put 只能在
+// Start 成功返回后调用；未启动时返回 ErrQueueNotStarted，已停止时返回 ErrQueueStopped。
+//
+// Put 会先保存 Meta 和 Body，再把 Meta 加入内存调度。Storage.SaveJob 失败时任务不会入队；
+// 返回 nil 表示 Storage 已确认任务可读且内存登记成功。
 func (q *Queue) Put(topic string, body []byte, priority uint32, delay, ttr time.Duration) (uint64, error) {
+	if q.stopped.Load() {
+		return 0, ErrQueueStopped
+	}
+	if !q.started.Load() {
+		return 0, ErrQueueNotStarted
+	}
+
 	// 1. 验证 topic
 	if err := ValidateTopicName(topic); err != nil {
 		q.logger.Warn("invalid topic name",
@@ -411,13 +431,12 @@ func (q *Queue) Put(topic string, body []byte, priority uint32, delay, ttr time.
 	// SaveJob 内部通过 batchSaveLoop 实现批量优化
 	ctx := context.Background()
 	if err := q.storage.SaveJob(ctx, meta, body); err != nil {
-		// 保存失败不影响任务执行(内存队列中仍然可用)
-		// 但重启后会丢失
 		q.logger.Error("failed to save job to storage",
 			slog.Uint64("id", id),
 			slog.String("topic", topic),
 			slog.Any("error", err),
 		)
+		return 0, err
 	}
 
 	// 6. 加入内存队列
@@ -428,6 +447,11 @@ func (q *Queue) Put(topic string, body []byte, priority uint32, delay, ttr time.
 			slog.String("topic", topic),
 			slog.Any("error", err),
 		)
+		// SaveJob 已经成功而内存登记被容量等规则拒绝时，必须删除刚保存的记录；否则该任务
+		// 会在当前进程中不可见，却在下次启动恢复时重新出现。
+		if rollbackErr := q.storage.DeleteJob(ctx, id); rollbackErr != nil {
+			return 0, errors.Join(err, fmt.Errorf("rollback persisted job %d: %w", id, rollbackErr))
+		}
 		return 0, err
 	}
 
