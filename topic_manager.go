@@ -676,8 +676,8 @@ func (h *topicManager) touch(id uint64, config *Config, duration ...time.Duratio
 // applyRecovery 应用一个恢复批次。
 //
 // 恢复批次按严格递增且互不重叠的 ID 范围生成，并受 Queue 启动时的 MaxID 快照限制。
-// Queue 在 Start 成功返回前会拒绝 Put；启动后新分配的 ID 均大于快照，因此这里
-// 无需为每个任务再做一次全局重复查找。方法会先检查新增 Topic 数量，失败时不会应用批次。
+// Put 可以在 Start 前完成，因此恢复批次可能包含已经进入内存 Topic 的任务；应用时必须按
+// ID 跳过这些任务。方法会先检查新增 Topic 数量，失败时不会应用批次。
 func (h *topicManager) applyRecovery(result *RecoveryResult) error {
 	h.mu.Lock()
 	readyTopics := make([]string, 0, len(result.TopicJobs))
@@ -711,6 +711,12 @@ func (h *topicManager) applyRecovery(result *RecoveryResult) error {
 		// 将任务加入对应队列
 		hasReady := false
 		for _, meta := range jobs {
+			// 启动前 Put 会同时写入 Storage 和内存 Topic。恢复扫描会再次读到该任务，
+			// 必须跳过，否则同一个任务可能被消费两次。
+			if existingMeta, _ := h.findJob(meta.ID); existingMeta != nil {
+				continue
+			}
+
 			switch meta.State {
 			case StateReady:
 				t.pushReady(meta)

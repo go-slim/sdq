@@ -405,8 +405,9 @@ if err == sdq.ErrTimeout {
   尽快返回，不能调用同一 Queue 的生命周期或运行期方法，也不应 panic。
 - Recovering 阶段的计数是累计已处理数量，不是预先统计的最终总量；Complete 阶段的
   `Result` 只包含摘要，不保留全部任务。
-- Queue 必须先完成 `Start` 调用，再由其他 goroutine 调用 `Put`、`Reserve` 等运行期 API。
-  `Put` 在启动完成前返回 `ErrQueueNotStarted`；启动、停止和运行期操作不应并发调用。
+- `Put` 可以在 `Start` 前调用；任务会先写入 Storage 和内存 Topic，随后由 `Start` 启动消费、
+  定时调度和存量恢复。启动前的 `Put` 应在调用 `Start` 前完成，启动、停止和运行期操作不应
+  并发调用。
 - 自定义 Storage 的 `ScanJobMeta` 必须遵守 ID 严格升序和游标前进契约；恢复失败不会回滚
   已经成功应用的页面。
 

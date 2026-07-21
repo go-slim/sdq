@@ -27,7 +27,8 @@ type Tickable interface {
 // Ticker 定时器接口，负责定时触发已注册对象的 ProcessTick 方法。
 //
 // Queue 对一个 Ticker 只调用一次 Start 和一次 Stop；自定义实现可以依赖这一生命周期，
-// 无需支持停止后重新启动。
+// 无需支持停止后重新启动。Queue 允许在 Start 前 Put，因此 Ticker 必须允许在 Start 前调用
+// Register 和 Wakeup；此时只需记录调度状态，不能要求后台循环已经运行。
 type Ticker interface {
 	// Name 返回定时器名称
 	Name() string

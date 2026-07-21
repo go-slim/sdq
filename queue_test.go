@@ -74,7 +74,7 @@ func TestQueue_StartStop(t *testing.T) {
 	}
 }
 
-func TestQueue_PutRequiresSuccessfulStart(t *testing.T) {
+func TestQueue_PutBeforeStartIsRecoveredOnlyOnce(t *testing.T) {
 	config := DefaultConfig()
 	config.Ticker = &noOpTicker{}
 	config.Storage = newMemoryStorage()
@@ -85,14 +85,50 @@ func TestQueue_PutRequiresSuccessfulStart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = q.Stop() })
 
-	if _, err := q.Put("test-topic", []byte("before start"), 10, 0, time.Minute); err != ErrQueueNotStarted {
-		t.Fatalf("Put() before Start error = %v, want ErrQueueNotStarted", err)
+	id, err := q.Put("test-topic", []byte("before start"), 10, 0, time.Minute)
+	if err != nil {
+		t.Fatalf("Put() before Start error: %v", err)
 	}
 	if err := q.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
-	if _, err := q.Put("test-topic", []byte("after start"), 10, 0, time.Minute); err != nil {
-		t.Fatalf("Put() after Start error: %v", err)
+	if err := q.WaitForRecovery(time.Second); err != nil {
+		t.Fatalf("WaitForRecovery() error: %v", err)
+	}
+
+	meta := q.TryReserve([]string{"test-topic"})
+	if meta == nil || meta.ID != id {
+		t.Fatalf("TryReserve() = %#v, want ID %d", meta, id)
+	}
+	if duplicate := q.TryReserve([]string{"test-topic"}); duplicate != nil {
+		t.Fatalf("TryReserve() returned duplicate job %#v", duplicate)
+	}
+}
+
+func TestQueue_PutBeforeStartContinuesStoredIDs(t *testing.T) {
+	storage := newMemoryStorage()
+	existing := NewJobMeta(41, "existing", 10, 0, time.Minute)
+	existing.State = StateBuried
+	if err := storage.SaveJob(context.Background(), existing, []byte("existing")); err != nil {
+		t.Fatalf("SaveJob() error: %v", err)
+	}
+
+	config := DefaultConfig()
+	config.Ticker = &noOpTicker{}
+	config.Storage = storage
+
+	q, err := New(config)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	t.Cleanup(func() { _ = q.Stop() })
+
+	id, err := q.Put("new", []byte("new"), 10, 0, time.Minute)
+	if err != nil {
+		t.Fatalf("Put() before Start error: %v", err)
+	}
+	if id != 42 {
+		t.Fatalf("Put() ID = %d, want 42", id)
 	}
 }
 

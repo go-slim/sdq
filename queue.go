@@ -39,7 +39,7 @@ var (
 	ErrInvalidTimeout = errors.New("sdq: timeout must be greater than 0")
 	// ErrQueueStopped Queue 已停止，无法重新启动
 	ErrQueueStopped = errors.New("sdq: queue already stopped")
-	// ErrQueueNotStarted Queue 尚未成功启动
+	// ErrQueueNotStarted Queue 尚未成功启动，无法等待后台恢复
 	ErrQueueNotStarted = errors.New("sdq: queue not started")
 	// ErrInvalidConfig 配置无效
 	ErrInvalidConfig = errors.New("sdq: invalid config")
@@ -95,7 +95,10 @@ type Queue struct {
 	stats *Stats
 }
 
-// New 创建新的 Queue 实例
+// New 创建新的 Queue 实例，并从 Storage 初始化任务 ID。
+//
+// 返回的 Queue 尚未启动消费和定时调度，但已经可以调用 Put。Storage 最大 ID 的读取失败时，
+// New 会关闭 Storage 并返回错误，避免启动前写入覆盖已有任务。
 func New(config Config) (*Queue, error) {
 	// 设置默认值
 	if config.DefaultTTR == 0 {
@@ -157,8 +160,16 @@ func New(config Config) (*Queue, error) {
 		return nil, fmt.Errorf("%w: storage is required", ErrInvalidConfig)
 	}
 
-	// 设置初始 ID
-	q.nextID.Store(1)
+	// Queue 在 Start 前即可 Put，因此 ID 生成器必须在构造完成前与 Storage 对齐。
+	maxID, err := q.storage.GetMaxJobID(ctx)
+	if err != nil {
+		cancel()
+		return nil, errors.Join(
+			fmt.Errorf("initialize job id: %w", err),
+			q.storage.Close(),
+		)
+	}
+	q.nextID.Store(maxID + 1)
 
 	// 创建管理器
 	q.topicMgr = newTopicManager(q)
@@ -180,7 +191,8 @@ type StartOptions struct {
 //
 // Start 在取得 Storage 当前最大任务 ID、启动恢复 goroutine 和运行组件后返回，不等待任务
 // 恢复完成。返回 nil 只表示启动成功；恢复错误由 WaitForRecovery 返回，也会通过
-// RecoveryCallback 报告。Start 必须在 Put 和 Stop 之前完成，不能与这两个方法并发调用。
+// RecoveryCallback 报告。Put 可以在 Start 前调用；这些任务会先持久化并进入内存调度，
+// Start 恢复时会按任务 ID 跳过重复项。Start 不能与 Put 或 Stop 并发调用。
 func (q *Queue) Start() error {
 	return q.StartWithOptions(StartOptions{})
 }
@@ -189,7 +201,8 @@ func (q *Queue) Start() error {
 //
 // 恢复期间 Queue 可以接收和消费新任务，但查询结果和统计可能暂时只包含已恢复的部分任务。
 // 此方法是幂等的，多次调用只会执行第一次启动，并返回第一次启动的结果；后续调用传入的
-// StartOptions 会被忽略。StartWithOptions 不能与 Put、Stop 或另一次启动调用并发执行。
+// StartOptions 会被忽略。启动前的 Put 应在调用 StartWithOptions 前完成；该方法不能与 Put、
+// Stop 或另一次启动调用并发执行。
 func (q *Queue) StartWithOptions(opts StartOptions) error {
 	q.startOnce.Do(func() {
 		q.startErr = q.doStart(opts)
@@ -259,8 +272,8 @@ func (q *Queue) doStart(opts StartOptions) error {
 		}, q.applyRecoveryJobs)
 	})
 
-	// 只有快照上限已确定且所有运行组件已启动后才允许 Put。此后分配的
-	// ID 严格大于恢复快照上限，不会被后台恢复重复装载。
+	// 快照上限确定后分配的新 ID 严格大于恢复范围；启动前已经进入内存的任务由恢复应用阶段
+	// 按 ID 去重。
 	q.started.Store(true)
 	q.logger.Info("queue started successfully")
 	return nil
@@ -376,17 +389,14 @@ func (q *Queue) cleanupLoop() {
 
 // Put 添加任务到队列。
 //
-// topic 不能为空；priority 数值越小优先级越高；ttr 为 0 时使用默认值。Put 只能在
-// Start 成功返回后调用；未启动时返回 ErrQueueNotStarted，已停止时返回 ErrQueueStopped。
+// topic 不能为空；priority 数值越小优先级越高；ttr 为 0 时使用默认值。Put 可以在 Start
+// 前调用，以便生产方先提交任务、随后再启动消费和定时调度；已停止时返回 ErrQueueStopped。
 //
 // Put 会先保存 Meta 和 Body，再把 Meta 加入内存调度。Storage.SaveJob 失败时任务不会入队；
 // 返回 nil 表示 Storage 已确认任务可读且内存登记成功。
 func (q *Queue) Put(topic string, body []byte, priority uint32, delay, ttr time.Duration) (uint64, error) {
 	if q.stopped.Load() {
 		return 0, ErrQueueStopped
-	}
-	if !q.started.Load() {
-		return 0, ErrQueueNotStarted
 	}
 
 	// 1. 验证 topic
