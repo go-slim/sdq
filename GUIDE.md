@@ -370,27 +370,45 @@ Job Body (可能很大):
 
 ### 自动恢复
 
-启动时自动从 Storage 恢复任务：
+启动时自动从 Storage 恢复任务。恢复按页在后台执行，配置回调必须在第一次启动时传入：
 
 ```go
 q, _ := sdq.New(config)
-_ = q.Start() // 自动异步恢复任务
 
-// 可选：等待恢复完成
-err := q.WaitForRecovery(30 * time.Second)
-if err == sdq.ErrTimeout {
-    log.Println("Recovery timeout, but queue is operational")
-}
-
-// 可选：监听恢复进度
-_ = q.StartWithOptions(sdq.StartOptions{
+err := q.StartWithOptions(sdq.StartOptions{
     RecoveryCallback: func(progress *sdq.RecoveryProgress) {
-        if progress.Phase == sdq.RecoveryPhaseComplete {
-            log.Printf("Recovered %d jobs in total", progress.TotalJobs)
+        switch progress.Phase {
+        case sdq.RecoveryPhaseRecovering:
+            log.Printf("Recovered %d jobs", progress.LoadedJobs)
+        case sdq.RecoveryPhaseError:
+            log.Printf("Recovery failed: %v", progress.Error)
         }
     },
 })
+if err != nil {
+    return err
+}
+
+// 可选：等待恢复完成
+err = q.WaitForRecovery(30 * time.Second)
+if err == sdq.ErrTimeout {
+    log.Println("Recovery timeout, but queue is operational")
+}
 ```
+
+**恢复注意事项：**
+
+- `Start` 和 `StartWithOptions` 在后台恢复完成前返回。恢复期间 Queue 可以继续工作，但任务
+  列表、Topic 数和统计值只反映当前已恢复的数据。
+- `WaitForRecovery` 返回 nil 才表示恢复成功；超时不停止恢复，Queue 也不会因此停止。
+- `RecoveryCallback` 在恢复 goroutine 中串行执行，可能早于 `StartWithOptions` 返回。回调应
+  尽快返回，不能调用同一 Queue 的生命周期或运行期方法，也不应 panic。
+- Recovering 阶段的计数是累计已处理数量，不是预先统计的最终总量；Complete 阶段的
+  `Result` 只包含摘要，不保留全部任务。
+- Queue 必须先完成 `Start` 调用，再由其他 goroutine 调用 `Put`、`Reserve` 等运行期 API。
+  `Put` 在启动完成前返回 `ErrQueueNotStarted`；启动、停止和运行期操作不应并发调用。
+- 自定义 Storage 的 `ScanJobMeta` 必须遵守 ID 严格升序和游标前进契约；恢复失败不会回滚
+  已经成功应用的页面。
 
 ### 数据持久化
 
@@ -400,6 +418,19 @@ _ = q.StartWithOptions(sdq.StartOptions{
 | ---------- | ------------- | ---- | ---------------------- |
 | **Memory** | ❌ 不持久化   | 最高 | 开发测试、临时队列     |
 | **SQLite** | ✅ 自动持久化 | 高   | 生产环境、需要崩溃恢复 |
+
+**持久化注意事项：**
+
+- `Storage.SaveJob` 返回 nil 时，Meta 和 Body 必须已经可读。`Queue.Put` 只有在保存和内存
+  登记都成功后才返回任务 ID；保存失败时任务不会进入调度。
+- SQLite 的 `SaveJob` 会等待事务提交；`UpdateJobMeta` 则只保证更新进入有界批处理缓冲区。
+  正常调用 `Queue.Stop` 会尝试排空更新，进程崩溃、强制终止或后续批量写失败时，最近的状态
+  变化仍可能未落盘。需要立即持久化时，SQLite 具体实现提供 `UpdateJobMetaSync`。
+- `Release`、`Bury`、`Kick`、`Touch`、延迟到期和运行期超时等状态转换先在内存中生效，
+  再向 Storage 提交元数据更新。提交失败时 SDQ 会记录错误，但不会回滚已经生效的内存状态，
+  也不会让调用方重试同一状态转换；此时重启可能按存储中的旧状态恢复。删除操作也遵循
+  相同原则。
+- `Stop` 前必须停止并等待所有生产者和消费者。Storage 的 `Close` 不与其他读写操作并发安全。
 
 **恢复策略：**
 
@@ -433,14 +464,16 @@ _ = q.StartWithOptions(sdq.StartOptions{
 
 **操作相关错误：**
 
-| 错误                    | 说明             |
-| ----------------------- | ---------------- |
-| `ErrTimeout`            | 操作超时         |
-| `ErrInvalidTimeout`     | 超时参数无效     |
-| `ErrMaxJobsReached`     | 达到最大任务数量 |
-| `ErrTouchLimitExceeded` | Touch 次数超限   |
-| `ErrInvalidTouchTime`   | Touch 时间无效   |
-| `ErrTooManyWaiters`     | 等待队列已满     |
+| 错误                    | 说明                       |
+| ----------------------- | -------------------------- |
+| `ErrTimeout`            | 操作超时                   |
+| `ErrInvalidTimeout`     | 超时参数无效               |
+| `ErrMaxJobsReached`     | 达到最大任务数量           |
+| `ErrTouchLimitExceeded` | Touch 次数超限             |
+| `ErrInvalidTouchTime`   | Touch 时间无效             |
+| `ErrTooManyWaiters`     | 等待队列已满               |
+| `ErrQueueNotStarted`    | Queue 尚未成功启动         |
+| `ErrQueueStopped`       | Queue 已停止且不能重新启动 |
 
 **Storage 相关错误：**
 
@@ -700,6 +733,9 @@ Put(topic, body, priority, delay, ttr)
     ↓
 返回 JobID
 ```
+
+如果步骤 2 失败，Put 立即返回错误且不会执行步骤 3；如果步骤 2 成功而步骤 3 因 Topic 或任务
+容量限制失败，Queue 会删除刚保存的记录，避免它在下次启动时成为当前进程不可见的恢复任务。
 
 **Reserve 操作流程：**
 
