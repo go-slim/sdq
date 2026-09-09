@@ -146,6 +146,7 @@ config := sdq.Config{
 
 ```go
 import (
+    "go-slim.dev/sdq/x/libsql"
     "go-slim.dev/sdq/x/memory"
     "go-slim.dev/sdq/x/sqlite"
 )
@@ -156,6 +157,9 @@ config.Storage = memory.New()
 // SQLite（生产环境）
 // 需要引入驱动：github.com/mattn/go-sqlite3 或 modernc.org/sqlite
 config.Storage, _ = sqlite.New("./jobs.db")
+
+// Turso/libSQL（无需 CGO，启用 MVCC）
+config.Storage, _ = libsql.New("./jobs.turso")
 ```
 
 ## 文档

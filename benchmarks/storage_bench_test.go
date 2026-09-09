@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go-slim.dev/sdq"
+	"go-slim.dev/sdq/x/libsql"
 	"go-slim.dev/sdq/x/memory"
 	"go-slim.dev/sdq/x/sqlite"
 
@@ -23,6 +24,10 @@ func BenchmarkStorage_SaveJob(b *testing.B) {
 		{"Memory", func() sdq.Storage { return memory.New() }},
 		{"SQLite", func() sdq.Storage {
 			s, _ := sqlite.New(b.TempDir() + "/bench.db")
+			return s
+		}},
+		{"LibSQL", func() sdq.Storage {
+			s, _ := libsql.New(b.TempDir() + "/bench.db")
 			return s
 		}},
 	}
@@ -56,6 +61,10 @@ func BenchmarkStorage_SaveJob_Parallel(b *testing.B) {
 		{"Memory", func() sdq.Storage { return memory.New() }},
 		{"SQLite", func() sdq.Storage {
 			s, _ := sqlite.New(b.TempDir() + "/bench.db")
+			return s
+		}},
+		{"LibSQL", func() sdq.Storage {
+			s, _ := libsql.New(b.TempDir() + "/bench.db")
 			return s
 		}},
 	}
@@ -93,6 +102,10 @@ func BenchmarkStorage_GetJobMeta(b *testing.B) {
 		{"Memory", func() sdq.Storage { return memory.New() }},
 		{"SQLite", func() sdq.Storage {
 			s, _ := sqlite.New(b.TempDir() + "/bench.db")
+			return s
+		}},
+		{"LibSQL", func() sdq.Storage {
+			s, _ := libsql.New(b.TempDir() + "/bench.db")
 			return s
 		}},
 	}
@@ -135,6 +148,10 @@ func BenchmarkStorage_GetJobBody(b *testing.B) {
 			s, _ := sqlite.New(b.TempDir() + "/bench.db")
 			return s
 		}},
+		{"LibSQL", func() sdq.Storage {
+			s, _ := libsql.New(b.TempDir() + "/bench.db")
+			return s
+		}},
 	}
 
 	for _, bm := range benchmarks {
@@ -164,30 +181,46 @@ func BenchmarkStorage_GetJobBody(b *testing.B) {
 	}
 }
 
-// BenchmarkStorage_UpdateJobMeta 测试 UpdateJobMeta 性能 (Memory only)
+// BenchmarkStorage_UpdateJobMeta 测试同步 UpdateJobMeta 性能。
+// SQLite 的接口方法是异步入队，持续基准会测到缓冲区背压，因此这里不作直接比较。
 func BenchmarkStorage_UpdateJobMeta(b *testing.B) {
-	storage := memory.New()
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-	body := []byte("benchmark test body")
-
-	// 预先保存任务
-	numJobs := 1000
-	metas := make([]*sdq.JobMeta, numJobs)
-	for i := 1; i <= numJobs; i++ {
-		meta := sdq.NewJobMeta(uint64(i), "bench-topic", 1, 0, 30*time.Second)
-		_ = storage.SaveJob(ctx, meta, body)
-		metas[i-1] = meta
+	benchmarks := []struct {
+		name    string
+		storage func() sdq.Storage
+	}{
+		{"Memory", func() sdq.Storage { return memory.New() }},
+		{"LibSQL", func() sdq.Storage {
+			s, _ := libsql.New(b.TempDir() + "/bench.db")
+			return s
+		}},
 	}
 
-	for i := 0; b.Loop(); i++ {
-		meta := metas[i%numJobs]
-		meta.Reserves++
-		err := storage.UpdateJobMeta(ctx, meta)
-		if err != nil {
-			b.Fatal(err)
-		}
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			storage := bm.storage()
+			defer func() { _ = storage.Close() }()
+
+			ctx := context.Background()
+			body := []byte("benchmark test body")
+			const numJobs = 1000
+			metas := make([]*sdq.JobMeta, numJobs)
+			for i := 1; i <= numJobs; i++ {
+				meta := sdq.NewJobMeta(uint64(i), "bench-topic", 1, 0, 30*time.Second)
+				if err := storage.SaveJob(ctx, meta, body); err != nil {
+					b.Fatal(err)
+				}
+				metas[i-1] = meta
+			}
+
+			b.ResetTimer()
+			for i := 0; b.Loop(); i++ {
+				meta := metas[i%numJobs]
+				meta.Reserves++
+				if err := storage.UpdateJobMeta(ctx, meta); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
 
@@ -200,6 +233,10 @@ func BenchmarkStorage_DeleteJob(b *testing.B) {
 		{"Memory", func() sdq.Storage { return memory.New() }},
 		{"SQLite", func() sdq.Storage {
 			s, _ := sqlite.New(b.TempDir() + "/bench.db")
+			return s
+		}},
+		{"LibSQL", func() sdq.Storage {
+			s, _ := libsql.New(b.TempDir() + "/bench.db")
 			return s
 		}},
 	}
@@ -238,6 +275,10 @@ func BenchmarkStorage_ScanJobMeta(b *testing.B) {
 		{"Memory", func() sdq.Storage { return memory.New() }},
 		{"SQLite", func() sdq.Storage {
 			s, _ := sqlite.New(b.TempDir() + "/bench.db")
+			return s
+		}},
+		{"LibSQL", func() sdq.Storage {
+			s, _ := libsql.New(b.TempDir() + "/bench.db")
 			return s
 		}},
 	}

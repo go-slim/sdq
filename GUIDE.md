@@ -240,7 +240,29 @@ import (
 storage, _ := sqlite.New("./jobs.db")
 ```
 
-**配置建议：**
+**Turso/libSQL Storage（无需 CGO，支持 MVCC）：**
+
+```go
+import (
+    "time"
+
+    "go-slim.dev/sdq/x/libsql"
+)
+
+storage, _ := libsql.New("./jobs.turso",
+    libsql.WithBusyTimeout(5*time.Second),
+    libsql.WithMaxOpenConns(10),
+    libsql.WithMaxBatchSize(128),
+    libsql.WithMaxBatchBytes(4*1024*1024),
+)
+```
+
+`SaveJob` 会将并发请求合并到同一事务中，并原子保存每个任务的元数据和 Body；
+`UpdateJobMeta` 在返回前完成持久化。MVCC checkpoint 和垃圾回收阈值默认均为 `10000`，
+可通过 `WithMVCCCheckpointThreshold` 和 `WithMVCCGCThreshold` 调整，传入 `-1` 可禁用自动处理。
+打开旧 SQLite Storage 数据库时，驱动会补充缺失的 Touch 元数据列。
+
+**SQLite 配置建议：**
 
 - 高并发场景：增大 `MaxBatchSize` 和 `MaxBatchBytes`
 - 低延迟场景：减小批量参数
